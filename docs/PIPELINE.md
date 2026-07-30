@@ -55,12 +55,18 @@ stage 1.
   package is `models_smplx_v1_1.zip` (~870MB) from the SMPL-X-specific section of the
   downloads page; genuine SMPL-X npz files have 22 keys and load into a model that produces
   10475 vertices / 127 joints on a forward pass — verified that actually works here.
-- **Not yet installed**: `GVHMR`. Installing it doesn't strictly require the SMPL-X models,
-  but running stage 1 does, and those need the user's own registration
-  (smpl-x.is.tue.mpg.de) — no point installing further until that's in hand. Its dependency
-  stack (DPVO, HMR2-style pose estimators) is also more likely than GMR's to assume CUDA at
-  build time, so this may end up being a GPU-box-only install regardless of the license
-  question.
+- **`GVHMR`: confirmed impossible to install on macOS, not just "likely CUDA-only".** Its
+  `requirements.txt` hard-pins `torch==2.3.0+cu121` via `--extra-index-url
+  https://download.pytorch.org/whl/cu121` (a CUDA-12.1-specific wheel that doesn't exist for
+  macOS at all) and, worse, pins `pytorch3d` directly to a wheel URL with a
+  `linux_x86_64`platform tag baked into the filename
+  (`pytorch3d-0.7.6-cp310-cp310-linux_x86_64.whl`) — pip will refuse that on any other
+  platform outright, no patching-around-the-edges fix. Checked this by reading the actual
+  requirements.txt rather than attempting the install; not worth the rabbit hole of
+  hand-patching CUDA-pinned deps just to prove what's already evident from the pins
+  themselves. **Stage 1 is a hard Linux+NVIDIA-GPU-box-only step.** Everything downstream of
+  it (stages 2-5, all now installed and either verified or ready) can be prepared in advance,
+  but the actual Erik Dalı SMPL-X extraction has to happen there.
 
 ## 3. RL motion-imitation training
 

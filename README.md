@@ -47,7 +47,10 @@ domain randomization, hardware rollout — all deferred to a rented GPU box / re
 - [x] GMR conda env installed + CLI verified on macOS/CPU (`smplx_to_robot.py`,
       `batch_gmr_pkl_to_csv.py`, `vis_robot_motion.py` — corrected `scripts/02_*.sh`, the
       original plan's `--save_as_csv` flag guess didn't exist; real flow is two scripts)
-- [ ] GVHMR conda env not yet installed (blocked on SMPL-X models either way, see below)
+- [x] GVHMR install feasibility checked — **confirmed impossible on macOS**: its
+      `requirements.txt` hard-pins `torch==2.3.0+cu121` and a `pytorch3d` wheel with
+      `linux_x86_64` baked into the URL itself. Stage 1 (video → SMPL-X) can only run on
+      the Linux+GPU box — see `docs/PIPELINE.md`.
 - [x] SMPL-X body models downloaded + verified for GMR (`third_party/gmr/assets/body_models/smplx/`)
       — user registered at smpl-x.is.tue.mpg.de and downloaded `models_smplx_v1_1.zip`
       themselves (license-gated, can't be scripted). First attempt actually downloaded the
