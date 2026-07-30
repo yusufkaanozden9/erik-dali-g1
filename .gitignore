@@ -9,10 +9,12 @@ reference_motion/raw/
 *.pkl
 *.onnx
 *.onnx.data
+*.pt
 logs/
 outputs/
 *.mp4
 !reference_motion/raw/.gitkeep
+trained_model/
 
 # SMPL-X body models (license-gated, never commit)
 **/body_models/
