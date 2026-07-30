@@ -44,7 +44,10 @@ domain randomization, hardware rollout — all deferred to a rented GPU box / re
       `docs/PIPELINE.md` "Smoke test — verified"
 - [x] Stage 5 smoke test (`05_smoke_test_training.sh`) — **verified working**: full PPO
       loop ran on the bundled example motion, checkpoint + ONNX export confirmed
-- [ ] GVHMR + GMR conda envs (needed for stages 1–2) not yet installed
+- [x] GMR conda env installed + CLI verified on macOS/CPU (`smplx_to_robot.py`,
+      `batch_gmr_pkl_to_csv.py`, `vis_robot_motion.py` — corrected `scripts/02_*.sh`, the
+      original plan's `--save_as_csv` flag guess didn't exist; real flow is two scripts)
+- [ ] GVHMR conda env not yet installed (blocked on SMPL-X models either way, see below)
 - [ ] SMPL-X body models downloaded — **blocked**: license-gated, requires the user's own
       registration at smpl-x.is.tue.mpg.de, can't be scripted
 - [ ] Stages 1–4 on the actual Erik Dalı clip (GVHMR → GMR → csv_to_npz → kinematic check)

@@ -15,15 +15,42 @@ stage 1.
 
 ## 2. Retargeting (executed via scripts, not yet run in this repo — needs Linux+GPU box)
 
-1. `scripts/01_extract_smplx.sh` — GVHMR: video → SMPL-X motion.
+1. `scripts/01_extract_smplx.sh` — GVHMR: video → SMPL-X motion. **Not yet installed/run**
+   (see "What's actually been verified" below — blocked on license-gated models, and its
+   own dependency stack (DPVO, HMR2, detectron2-style CV libs) likely needs CUDA to build,
+   so this stage specifically may need the Linux GPU box even just to install).
 2. `scripts/02_retarget_to_g1.sh` — GMR: SMPL-X → full 29-DoF G1 joint motion
-   (`--robot unitree_g1`, GMR's only G1 IK config).
-3. `scripts/03_csv_to_npz_23dof.sh` — mjlab's `csv_to_npz.py --robot g1_23dof`: 29-DoF CSV
-   → 23-DoF npz, dropping the wrist DoFs the 23-DoF model lacks. **Verify the column mapping**
-   against the shipped `third_party/unitree_rl_mjlab/src/assets/motions/g1_23dof/dance1_subject2.csv`
-   before trusting the output — see the script's own header comment.
-4. `scripts/04_kinematic_sanity_check.sh` — GMR's visualizer, CPU-only, catches
-   self-collision / joint-limit / foot-sliding problems before any training compute is spent.
+   (`--robot unitree_g1`, GMR's only G1 IK config — confirmed via `smplx_to_robot.py --help`,
+   full robot list: unitree_g1, unitree_g1_with_hands, unitree_h1, unitree_h1_2,
+   booster_t1[_29dof], stanford_toddy, fourier_n1, engineai_pm01, kuavo_s45, hightorque_hi,
+   galaxea_r1pro, berkeley_humanoid_lite, booster_k1, pnd_adam_lite, openloong, tienkung,
+   fourier_gr3). Two-step, not one: `smplx_to_robot.py --save_path <dir>/erik_dali.pkl`,
+   then `batch_gmr_pkl_to_csv.py --folder <dir>` writes `<dir>/csv/erik_dali.csv` — verified
+   by reading the converter's source, which writes `[root_pos(3), root_rot_xyzw(4),
+   dof_pos(N)]`, exactly matching what mjlab's `csv_to_npz.py` parses.
+3. `scripts/03_csv_to_npz_23dof.sh` — mjlab's `csv_to_npz.py --robot g1_23dof --device cpu`:
+   29-DoF CSV → 23-DoF npz, dropping the wrist DoFs the 23-DoF model lacks. **Verify the
+   column mapping** against the shipped
+   `third_party/unitree_rl_mjlab/src/assets/motions/g1_23dof/dance1_subject2.csv` before
+   trusting the output — see the script's own header comment. CLI itself (`--device`, all
+   other flags) confirmed working — this exact script converted the bundled example motion
+   successfully during the stage-5 smoke test below.
+4. `scripts/04_kinematic_sanity_check.sh` — GMR's visualizer (`vis_robot_motion.py --robot
+   --robot_motion_path`, confirmed via `--help`), CPU-only, catches self-collision /
+   joint-limit / foot-sliding problems before any training compute is spent.
+
+### What's actually been verified vs. still assumed (2026-07-30)
+
+- **Installed + CLI-verified on macOS/CPU**: `unitree_rl_mjlab` (fully — see smoke test
+  below) and `GMR` (`pip install -e .` + PyQt6 succeeded; `smplx_to_robot.py`,
+  `batch_gmr_pkl_to_csv.py`, `vis_robot_motion.py` all checked against real `--help` output,
+  not assumed from docs).
+- **Not yet installed**: `GVHMR`. Installing it doesn't strictly require the SMPL-X models,
+  but running stage 1 does, and those need the user's own registration
+  (smpl-x.is.tue.mpg.de) — no point installing further until that's in hand. Its dependency
+  stack (DPVO, HMR2-style pose estimators) is also more likely than GMR's to assume CUDA at
+  build time, so this may end up being a GPU-box-only install regardless of the license
+  question.
 
 ## 3. RL motion-imitation training
 

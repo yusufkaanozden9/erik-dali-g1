@@ -2,16 +2,19 @@
 # Stage 2: SMPL-X human motion -> Unitree G1 joint-space motion, via GMR.
 #
 # GMR only ships a single G1 IK config (general_motion_retargeting/ik_configs/smplx_to_g1.json),
-# targeting the full 29-DoF G1 — there is no separate 23-DoF retargeting config. The 23-DoF
-# motion used downstream is derived from this 29-DoF output by scripts/03_csv_to_npz_23dof.sh
-# (which drops the wrist/hand DoF columns mjlab's 23-DoF model doesn't have).
+# targeting the full 29-DoF G1 (--robot unitree_g1) — there is no separate 23-DoF retargeting
+# config. The 23-DoF motion used downstream is derived from this 29-DoF output by
+# scripts/03_csv_to_npz_23dof.sh (which drops the wrist/hand DoF columns mjlab's 23-DoF model
+# doesn't have).
 #
-# CHECK BEFORE RUNNING: confirm --save_as_csv (or whatever the installed GMR version calls
-# its mjlab/beyondmimic-compatible CSV export) via:
-#   conda run -n gmr python scripts/smplx_to_robot.py --help
-# The flag name was corroborated by GMR's docs/PRs but not pinned against the exact commit
-# checked out here (see setup_envs.sh's GMR_COMMIT) — this is the one place in the pipeline
-# to double check before trusting the command below.
+# VERIFIED (2026-07-30) against the actual installed GMR CLI — the earlier plan assumed a
+# `--save_as_csv` flag on smplx_to_robot.py; that doesn't exist. CSV export is a SEPARATE
+# script that batch-converts a folder of .pkl outputs:
+#   scripts/smplx_to_robot.py        --smplx_file ... --robot unitree_g1 --save_path <dir>/erik_dali.pkl
+#   scripts/batch_gmr_pkl_to_csv.py  --folder <dir>   -> writes <dir>/csv/erik_dali.csv
+# Confirmed by reading batch_gmr_pkl_to_csv.py: it writes columns
+# [root_pos(3), root_rot_xyzw(4), dof_pos(N)] — exactly what mjlab's csv_to_npz.py expects
+# (root pos/quat + per-joint angles), and downsamples to 30fps if the source is faster.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -29,8 +32,10 @@ conda run -n gmr python scripts/smplx_to_robot.py \
   --smplx_file "$SMPLX_FILE" \
   --robot unitree_g1 \
   --save_path "$OUT_DIR/$OUT_NAME.pkl" \
-  --save_as_csv \
   --rate_limit
 
-echo "[done] $OUT_DIR/$OUT_NAME.pkl (+ .csv if --save_as_csv is the right flag on this GMR version)"
-echo "       Sanity-check it first with scripts/04_kinematic_sanity_check.sh before converting to npz."
+conda run -n gmr python scripts/batch_gmr_pkl_to_csv.py --folder "$OUT_DIR"
+
+echo "[done] $OUT_DIR/$OUT_NAME.pkl and $OUT_DIR/csv/$OUT_NAME.csv"
+echo "       Sanity-check the pkl first with scripts/04_kinematic_sanity_check.sh, then feed"
+echo "       the csv into scripts/03_csv_to_npz_23dof.sh."
