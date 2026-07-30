@@ -3,16 +3,13 @@
 # — task registration, CLI parsing, MuJoCo scene construction, a few PPO update steps —
 # using unitree_rl_mjlab's own BUNDLED example motion (dance1_subject2), not Erik Dalı data.
 # This can run before stages 1-4 finish, and is CPU-tolerant (just slow) so it's the one
-# thing in this pipeline verifiable without a rented GPU.
+# thing in this pipeline verifiable without a rented GPU. Verified working on macOS/CPU
+# (no CUDA) with these exact flags — see docs/PIPELINE.md "Smoke test — verified" for the
+# install fixes (mujoco pin, scipy) this needed.
 #
 # Real training (thousands of iterations, --env.scene.num-envs=4096) is a deliberate,
 # separate step — see docs/PIPELINE.md "Real training run". Don't scale this up in place;
 # launch that on the GPU box instead.
-#
-# NOTE: --max_iterations below is a guess at the flag name (mjlab/rsl_rl training scripts
-# commonly expose this, but it wasn't confirmed against this repo's actual CLI). Check
-# `conda run -n unitree_rl_mjlab python scripts/train.py --help` first and adjust if needed
-# — if there's no CLI flag for it, just Ctrl-C after a few iterations print instead.
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -23,10 +20,11 @@ MAX_ITERATIONS="${2:-5}"
 cd "$MJLAB_DIR"
 
 conda run -n unitree_rl_mjlab python scripts/train.py Unitree-G1-23Dof-Tracking-No-State-Estimation \
-  --motion_file=src/assets/motions/g1_23dof/dance1_subject2.npz \
+  --motion-file=src/assets/motions/g1_23dof/dance1_subject2.npz \
   --env.scene.num-envs="$NUM_ENVS" \
-  --max_iterations="$MAX_ITERATIONS"
+  --agent.max-iterations="$MAX_ITERATIONS" \
+  --gpu-ids None
 
 echo "[done] If this completed without crashing, the training entrypoint is confirmed working."
-echo "       Swap --motion_file to the Erik Dalı npz from stage 3 and --env.scene.num-envs=4096"
-echo "       for the real run, on a GPU box (see docs/PIPELINE.md)."
+echo "       Swap --motion-file to the Erik Dalı npz from stage 3, drop --gpu-ids None, and use"
+echo "       --env.scene.num-envs=4096 for the real run, on a GPU box (see docs/PIPELINE.md)."

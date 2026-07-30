@@ -47,12 +47,47 @@ What this does under the hood (asymmetric actor-critic PPO, per `src/tasks/track
 
 Training outputs land in `logs/rsl_rl/<robot>_tracking/<date_time>/model_<iter>.pt`.
 
-### Smoke test (done here, no GPU needed)
+### Smoke test — verified (2026-07-30, macOS arm64, CPU only)
 
-`scripts/05_smoke_test_training.sh` runs the same task on unitree_rl_mjlab's own bundled
-`dance1_subject2` example with `--env.scene.num-envs=4` for a handful of iterations — proves
-task registration / CLI / MuJoCo scene construction work, without waiting on the retargeting
-chain or spending real GPU time.
+`scripts/05_smoke_test_training.sh` was actually run end-to-end on this machine (no GPU,
+no CUDA) against unitree_rl_mjlab's own bundled `dance1_subject2` example. Confirmed
+working: task registration (`Unitree-G1-23Dof-Tracking-No-State-Estimation` is a real,
+listed task — `python scripts/list_envs.py` shows 29 registered tasks total), CSV→npz
+conversion, MuJoCo/mjlab scene construction (124-dim actor obs, 256-dim critic obs, 23-dim
+action space — matches the 23-DoF G1 exactly), the full PPO update loop (3 iterations,
+~99 steps/s on CPU with 4 parallel envs), and checkpoint + ONNX export
+(`model_2.pt`, `policy.onnx`).
+
+Install fixes needed beyond the plain `pip install -e .` (now folded into `setup_envs.sh`):
+- **`mujoco` version pin.** `unitree_rl_mjlab`'s `setup.py` pins `mujoco-warp==3.5.0` but
+  not `mujoco` itself, so pip installs the newest `mujoco` (3.11.0 at time of writing) —
+  which has renamed/removed `mujoco.mjtEnableBit.mjENBL_MULTICCD`, an enum
+  `mujoco-warp==3.5.0` still references at import time. Fix: `pip install mujoco==3.5.0`.
+- **Missing `scipy`.** `mjlab.terrains.heightfield_terrains` imports `scipy.interpolate`
+  but `scipy` isn't in mjlab's own dependency list. Fix: `pip install scipy`.
+
+CLI flags actually differ slightly from what the earlier plan assumed (corrected in the
+scripts):
+- `scripts/train.py`: `--motion-file` (hyphenated, not `--motion_file`), iteration count is
+  `--agent.max-iterations` (not `--max_iterations`), and `--gpu-ids` defaults to `'[0]'` —
+  pass `--gpu-ids None` to force CPU. Default logger is `wandb`, which errors without a
+  configured API key; pass `--agent.logger tensorboard` to avoid that.
+- `scripts/csv_to_npz.py`: `--device` defaults to `cuda:0` — pass `--device cpu` on a
+  machine without CUDA.
+
+Verified command (run from `third_party/unitree_rl_mjlab/`, `unitree_rl_mjlab` conda env):
+
+```bash
+python scripts/csv_to_npz.py --input-file src/assets/motions/g1_23dof/dance1_subject2.csv \
+  --output-name dance1_subject2.npz --input-fps 30 --output-fps 50 --robot g1_23dof --device cpu
+
+python scripts/train.py Unitree-G1-23Dof-Tracking-No-State-Estimation \
+  --motion-file=src/assets/motions/g1_23dof/dance1_subject2.npz \
+  --env.scene.num-envs=4 --agent.max-iterations=3 --agent.logger tensorboard --gpu-ids None
+```
+
+This proves the training entrypoint works, without waiting on the retargeting chain
+(stages 1-2, blocked on the license-gated SMPL-X body models) or spending real GPU time.
 
 ### Real training run (NOT executed in this repo — deferred)
 

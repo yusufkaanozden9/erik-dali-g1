@@ -15,9 +15,10 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MJLAB_DIR="$ROOT_DIR/third_party/unitree_rl_mjlab"
 
-CSV_FILE="${1:?Usage: $0 <path_to_retargeted_csv> [output_name=erik_dali.npz] [input_fps=30]}"
+CSV_FILE="${1:?Usage: $0 <path_to_retargeted_csv> [output_name=erik_dali.npz] [input_fps=30] [device=cpu]}"
 OUT_NAME="${2:-erik_dali.npz}"
 INPUT_FPS="${3:-30}"
+DEVICE="${4:-cpu}"   # csv_to_npz.py defaults to cuda:0; pass "cuda:0" here on the GPU box.
 
 cd "$MJLAB_DIR"
 
@@ -26,6 +27,7 @@ conda run -n unitree_rl_mjlab python scripts/csv_to_npz.py \
   --output-name "$OUT_NAME" \
   --input-fps "$INPUT_FPS" \
   --output-fps 50 \
-  --robot g1_23dof
+  --robot g1_23dof \
+  --device "$DEVICE"
 
 echo "[done] Output under $MJLAB_DIR (per csv_to_npz.py's own convention, typically src/assets/motions/g1_23dof/$OUT_NAME)"

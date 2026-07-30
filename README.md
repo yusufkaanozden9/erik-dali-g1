@@ -37,14 +37,18 @@ domain randomization, hardware rollout — all deferred to a rented GPU box / re
 
 ## Status
 
-- [x] Reference clip sourced + trimmed + visually sanity-checked
-      (`reference_motion/NOTES.md`)
+- [x] Reference clip sourced + visually sanity-checked (`reference_motion/NOTES.md`)
 - [x] Pipeline scaffold + scripts written
-- [ ] `setup_envs.sh` actually run (needs Linux; local dev machine here is macOS)
-- [ ] SMPL-X body models downloaded (license-gated, manual step — see `setup_envs.sh`)
-- [ ] Stages 1–4 (GVHMR → GMR → csv_to_npz → kinematic check) executed
-- [ ] Stage 5 smoke test (`05_smoke_test_training.sh`) executed
-- [ ] Real training run on a GPU box (out of scope for this repo's initial scaffold)
+- [x] `unitree_rl_mjlab` + `mjlab`/`mujoco-warp` install verified on macOS/CPU (arm64) —
+      needed 2 install fixes not in the upstream repo's own docs, see
+      `docs/PIPELINE.md` "Smoke test — verified"
+- [x] Stage 5 smoke test (`05_smoke_test_training.sh`) — **verified working**: full PPO
+      loop ran on the bundled example motion, checkpoint + ONNX export confirmed
+- [ ] GVHMR + GMR conda envs (needed for stages 1–2) not yet installed
+- [ ] SMPL-X body models downloaded — **blocked**: license-gated, requires the user's own
+      registration at smpl-x.is.tue.mpg.de, can't be scripted
+- [ ] Stages 1–4 on the actual Erik Dalı clip (GVHMR → GMR → csv_to_npz → kinematic check)
+- [ ] Real training run on Erik Dalı data with `--env.scene.num-envs=4096` on a GPU box
 
 ## Quickstart (on a Linux box with an NVIDIA GPU)
 

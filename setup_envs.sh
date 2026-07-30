@@ -69,6 +69,12 @@ conda install -y -n gmr -c conda-forge libstdcxx-ng
 echo "== unitree_rl_mjlab conda env (python 3.11) =="
 conda create -y -n unitree_rl_mjlab python=3.11
 conda run -n unitree_rl_mjlab pip install -e "$THIRD_PARTY_DIR/unitree_rl_mjlab"
+# Verified on macOS/CPU (2026-07-30): the repo's setup.py pins mujoco-warp==3.5.0 but
+# doesn't pin `mujoco` itself, so pip grabs the newest mujoco — which has since renamed/
+# removed an enum (mjENBL_MULTICCD) mujoco-warp 3.5.0 still expects, breaking every import.
+# Pin mujoco back down to match. Also: `scipy` is imported by mjlab's terrain code but
+# missing from its own dependency list.
+conda run -n unitree_rl_mjlab pip install "mujoco==3.5.0" scipy
 
 cat <<'EOF'
 
@@ -88,4 +94,10 @@ GVHMR also needs its own pretrained checkpoints (HMR2, ViTPose, DPVO, YOLO) — 
 third_party/gvhmr/docs/INSTALL.md for the download links, several are also gated.
 
 Once those are in place, run the scripts/ pipeline in order (01 → 05).
+
+Note: scripts/05_smoke_test_training.sh (bundled example motion, no SMPL-X needed) was
+verified working end-to-end on macOS/CPU (arm64) with this exact setup — task registration,
+scene construction, a few PPO iterations, checkpoint + ONNX export all confirmed. On a
+machine with no CUDA GPU, pass --gpu-ids None (train.py) / --device cpu (csv_to_npz.py) —
+both scripts already do this by default via their positional/flag args, see their headers.
 EOF
