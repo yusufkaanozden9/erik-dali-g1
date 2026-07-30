@@ -132,21 +132,41 @@ python scripts/train.py Unitree-G1-23Dof-Tracking-No-State-Estimation \
 This proves the training entrypoint works, without waiting on the retargeting chain
 (stages 1-2, blocked on the license-gated SMPL-X body models) or spending real GPU time.
 
-### Real training run (NOT executed in this repo — deferred)
+### Real training run — verified (2026-07-30, rented RTX 4090)
 
-- 4096 parallel envs needs an NVIDIA GPU with real VRAM headroom; drop to 2048/1024/512 if
-  it OOMs (affects sample throughput and PPO batch behavior, not feasibility).
-- Follow the same operational pattern `unibot_submission/vast_ai/` already uses for its own
-  (unrelated) training runs: rent a GPU box, run `setup_envs.sh`, launch training, monitor,
-  tear down. Would need a `vast_ai/`-equivalent directory here with an adapted
-  `launch_training.sh` — not written yet, since no training has actually been launched.
-- Curriculum (per the original plan): start the policy on a static reference pose, add arm
-  gestures, then small weight shifts, then foot lifts, ramping tempo from 50% → 100%,
-  finally enabling turns and stronger domain randomization. `unitree_rl_mjlab`'s task config
-  (`src/tasks/tracking/config/g1_23dof/env_cfgs.py`) is where this would be implemented —
-  not yet touched.
-- Domain randomization (friction, mass, PD gains, motor delay, IMU/encoder noise, small
-  external pushes) — same file, not yet touched.
+Actually launched, on the real `erik_dali.npz` motion (from the user's own reference clip,
+retargeted through GVHMR→GMR, converted to 23-DoF): `scripts/06_launch_real_training.sh`,
+`--env.scene.num-envs=4096 --agent.max-iterations=5000`.
+
+Measured throughput: **0.96s/iteration, ~102k env-steps/sec** at 4096 envs on a single
+RTX 4090. At that rate: 1,000 iters ≈ 16 min, 5,000 iters ≈ 1h20m, mjlab's own default
+30,001 iters ≈ 8h. GPU rental cost is trivial at any of these (~$0.30-0.35/hr spot pricing)
+— wall-clock time is the actual budget constraint, not money.
+
+**Gotcha that cost real GPU-minutes**: without `PYTHONUNBUFFERED=1` / `python -u`, stdout
+is fully block-buffered once redirected to a log file (`... > file.log 2>&1 &`) — training
+was genuinely running correctly the whole time, but the log stayed empty for 15-20+ minutes,
+looking exactly like a hang. Killed a real run over this before diagnosing it with a smaller
+unbuffered re-run. `scripts/06_launch_real_training.sh` and the updated
+`scripts/05_smoke_test_training.sh` both set this correctly now.
+
+Also needed on this rented box specifically (not present in the original setup_envs.sh):
+- Anaconda's channel Terms-of-Service gate blocks non-interactive `conda create` on fresh
+  installs — run `conda tos accept --override-channels --channel
+  https://repo.anaconda.com/pkgs/main` (and `.../pkgs/r`) once, first.
+- `warp-lang` has no upper version bound in `mjlab==1.2.0`'s own dependency pin
+  (`warp-lang>=1.12.0`), so plain `pip install` grabs the newest (1.15.0 as of writing),
+  which breaks `mjlab.sim.Simulation`'s CUDA-graph detection
+  (`AttributeError: module 'warp' has no attribute 'context'`) — this only shows up when
+  actually using a CUDA device, so the earlier CPU-only smoke test never hit it. Fix:
+  `pip install warp-lang==1.12.1` (mjlab's declared minimum).
+
+Curriculum and domain randomization (start on a static pose, ramp tempo, ramp
+randomization strength) as described in the original plan were **not** applied for this
+first run — it trains directly on the full-tempo, full-amplitude Erik Dalı clip from
+iteration 0. Revisit `src/tasks/tracking/config/g1_23dof/env_cfgs.py` if the resulting
+policy struggles with the faster/more dynamic sections of the dance (see
+`reference_motion/NOTES.md`'s note about motion blur on fast segments).
 
 ## 4. Evaluation
 

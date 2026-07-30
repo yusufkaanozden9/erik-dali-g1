@@ -55,16 +55,32 @@ if ! command -v conda >/dev/null 2>&1; then
   exit 1
 fi
 
+# Fresh Anaconda installs gate non-interactive `conda create` behind a channel Terms-of-
+# Service acceptance now. Harmless to re-run if already accepted.
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/main || true
+conda tos accept --override-channels --channel https://repo.anaconda.com/pkgs/r || true
+
 echo "== gvhmr conda env (python 3.10) =="
 conda create -y -n gvhmr python=3.10
 conda run -n gvhmr pip install -r "$THIRD_PARTY_DIR/gvhmr/requirements.txt"
 conda run -n gvhmr pip install -e "$THIRD_PARTY_DIR/gvhmr"
+# Verified on a Linux+CUDA GPU box (2026-07-30): the chumpy dep in requirements.txt fails
+# to build ("ModuleNotFoundError: No module named 'pip'") under modern pip's default build
+# isolation, because chumpy's legacy setup.py imports pip directly. Fix: install it with
+# build isolation disabled after numpy is already present.
+conda run -n gvhmr pip install numpy==1.23.5
+conda run -n gvhmr pip install --no-build-isolation chumpy
 
 echo "== gmr conda env (python 3.10) =="
 conda create -y -n gmr python=3.10
 conda run -n gmr pip install -e "$THIRD_PARTY_DIR/gmr"
 conda run -n gmr pip install PyQt6 PyQt6-Qt6 PyQt6-sip
 conda install -y -n gmr -c conda-forge libstdcxx-ng
+# GMR's own visualizer/retargeting scripts (vis_robot_motion.py, gvhmr_to_robot.py) open a
+# GLFW window even in --record_video mode, which fails outright on a headless GPU box
+# ("X11: The DISPLAY environment variable is missing"). Run them under a virtual display:
+#   apt install -y xvfb   (once)
+#   xvfb-run -a conda run -n gmr python scripts/<whatever>.py ...
 
 echo "== unitree_rl_mjlab conda env (python 3.11) =="
 conda create -y -n unitree_rl_mjlab python=3.11
@@ -75,6 +91,12 @@ conda run -n unitree_rl_mjlab pip install -e "$THIRD_PARTY_DIR/unitree_rl_mjlab"
 # Pin mujoco back down to match. Also: `scipy` is imported by mjlab's terrain code but
 # missing from its own dependency list.
 conda run -n unitree_rl_mjlab pip install "mujoco==3.5.0" scipy
+# Verified on a real GPU box (2026-07-30): mjlab==1.2.0 declares `warp-lang>=1.12.0` with
+# no upper bound, so pip grabs the newest warp-lang — which breaks
+# mjlab.sim.Simulation's CUDA-graph detection (`AttributeError: module 'warp' has no
+# attribute 'context'`). Only shows up when actually training on a CUDA device, not on the
+# macOS/CPU smoke test. Pin to mjlab's own declared minimum.
+conda run -n unitree_rl_mjlab pip install "warp-lang==1.12.1"
 
 cat <<'EOF'
 
@@ -83,21 +105,47 @@ Both GVHMR and GMR need the SMPL-X body models, which are license-gated (free re
 required, cannot be scripted):
 
   1. Register at https://smpl-x.is.tue.mpg.de/
-  2. Download SMPLX_NEUTRAL.pkl, SMPLX_FEMALE.pkl, SMPLX_MALE.pkl
-  3. Place them in:
-       third_party/gvhmr/body_models/smplx/
+  2. On the downloads page, get the "SMPL-X" package specifically (models_smplx_v1_1.zip,
+     ~870MB) — NOT the plain "SMPL" package. Verified gotcha (2026-07-30): the two look
+     similar and a first attempt grabbed plain SMPL by mistake. Files end up named
+     SMPLX_{NEUTRAL,FEMALE,MALE}.npz either way, but plain-SMPL npz files only have 11 keys
+     (missing hand PCA components etc.) and fail to load as SMPL-X with:
+     `AttributeError: 'Struct' object has no attribute 'hands_componentsl'`. Genuine
+     SMPL-X npz files have 22 keys and load into a model producing 10475 vertices / 127
+     joints on a forward pass — verify with that before trusting the download.
+  3. Place the .npz files in:
+       third_party/gvhmr/inputs/checkpoints/body_models/smplx/   (NOT third_party/gvhmr/body_models/)
        third_party/gmr/assets/body_models/smplx/
-     (check each repo's own INSTALL.md for the exact expected path/filename — these move
-     between versions.)
 
-GVHMR also needs its own pretrained checkpoints (HMR2, ViTPose, DPVO, YOLO) — see
-third_party/gvhmr/docs/INSTALL.md for the download links, several are also gated.
+GVHMR also needs its own pretrained checkpoints (dpvo, gvhmr, hmr2, vitpose, yolo) in
+third_party/gvhmr/inputs/checkpoints/{dpvo,gvhmr,hmr2,vitpose,yolo}/. The Google Drive link
+in GVHMR's own docs (docs/INSTALL.md) frequently hits Google's anonymous-download quota
+("Cannot retrieve the public link... may need permission... or have had many accesses") —
+verified working alternative: the camenduru/GVHMR mirror on HuggingFace has the exact same
+files at the exact same paths:
+  https://huggingface.co/camenduru/GVHMR/tree/main
+Use `huggingface_hub`'s `hf_hub_download` (not raw wget/curl) — HF's newer "Xet" storage
+backend serves large files through signed CDN redirects that plain wget mishandles (403s
+on files with special characters like `=` in the name, e.g. hmr2/epoch=10-step=25000.ckpt).
 
-Once those are in place, run the scripts/ pipeline in order (01 → 05).
+GVHMR's demo.py also always tries to render a preview video, which needs the plain (not
+SMPL-X) SMPL body model at inputs/checkpoints/body_models/smpl/ — a *third*, separately
+gated registration at smpl.is.tue.mpg.de. Not worth it just for a preview render: the
+actual motion prediction (`hmr4d_results.pt`, what stage 2 needs) is saved to disk BEFORE
+the render step runs, so letting demo.py crash on the missing SMPL model after that point
+is fine — the file you need is already there.
+
+Once those are in place, run the scripts/ pipeline in order (01 → 06).
 
 Note: scripts/05_smoke_test_training.sh (bundled example motion, no SMPL-X needed) was
-verified working end-to-end on macOS/CPU (arm64) with this exact setup — task registration,
-scene construction, a few PPO iterations, checkpoint + ONNX export all confirmed. On a
-machine with no CUDA GPU, pass --gpu-ids None (train.py) / --device cpu (csv_to_npz.py) —
-both scripts already do this by default via their positional/flag args, see their headers.
+verified working end-to-end on macOS/CPU (arm64) — task registration, scene construction,
+a few PPO iterations, checkpoint + ONNX export all confirmed. On a machine with no CUDA
+GPU, pass --gpu-ids None (train.py) / --device cpu (csv_to_npz.py) — both scripts already
+do this by default via their positional/flag args, see their headers.
+
+The full pipeline (stages 1-6) was verified end-to-end on a rented RTX 4090 (2026-07-30),
+including a real 5000-iteration training run on the user's own Erik Dalı reference clip —
+see docs/PIPELINE.md "Real training run — verified" for measured throughput and the
+PYTHONUNBUFFERED gotcha that matters once you're actually launching training in the
+background over SSH.
 EOF

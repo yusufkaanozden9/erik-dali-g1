@@ -19,7 +19,11 @@ MAX_ITERATIONS="${2:-5}"
 
 cd "$MJLAB_DIR"
 
-conda run -n unitree_rl_mjlab python scripts/train.py Unitree-G1-23Dof-Tracking-No-State-Estimation \
+# PYTHONUNBUFFERED=1 / python -u matters: without it, stdout is fully block-buffered
+# once redirected to a file/log, so nothing appears for a long time even though training
+# is genuinely progressing — this cost real GPU-minutes once during the actual training
+# run before we figured it out (see docs/PIPELINE.md "Real training run — verified").
+PYTHONUNBUFFERED=1 conda run --no-capture-output -n unitree_rl_mjlab python -u scripts/train.py Unitree-G1-23Dof-Tracking-No-State-Estimation \
   --motion-file=src/assets/motions/g1_23dof/dance1_subject2.npz \
   --env.scene.num-envs="$NUM_ENVS" \
   --agent.max-iterations="$MAX_ITERATIONS" \
