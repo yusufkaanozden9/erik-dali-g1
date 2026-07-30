@@ -48,8 +48,13 @@ domain randomization, hardware rollout — all deferred to a rented GPU box / re
       `batch_gmr_pkl_to_csv.py`, `vis_robot_motion.py` — corrected `scripts/02_*.sh`, the
       original plan's `--save_as_csv` flag guess didn't exist; real flow is two scripts)
 - [ ] GVHMR conda env not yet installed (blocked on SMPL-X models either way, see below)
-- [ ] SMPL-X body models downloaded — **blocked**: license-gated, requires the user's own
-      registration at smpl-x.is.tue.mpg.de, can't be scripted
+- [x] SMPL-X body models downloaded + verified for GMR (`third_party/gmr/assets/body_models/smplx/`)
+      — user registered at smpl-x.is.tue.mpg.de and downloaded `models_smplx_v1_1.zip`
+      themselves (license-gated, can't be scripted). First attempt actually downloaded the
+      wrong model (plain **SMPL**, not SMPL-X — same-looking filenames, missing
+      hand/expression blendshapes); caught it by trying to load the file and re-downloaded
+      the correct package. Confirmed with a real forward pass: 10475 vertices, 127 joints.
+      GVHMR needs its own copy of these — not yet placed, see below.
 - [ ] Stages 1–4 on the actual Erik Dalı clip (GVHMR → GMR → csv_to_npz → kinematic check)
 - [ ] Real training run on Erik Dalı data with `--env.scene.num-envs=4096` on a GPU box
 

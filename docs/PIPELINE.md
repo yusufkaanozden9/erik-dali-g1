@@ -45,6 +45,16 @@ stage 1.
   below) and `GMR` (`pip install -e .` + PyQt6 succeeded; `smplx_to_robot.py`,
   `batch_gmr_pkl_to_csv.py`, `vis_robot_motion.py` all checked against real `--help` output,
   not assumed from docs).
+- **SMPL-X body models**: downloaded and verified for GMR (`third_party/gmr/assets/body_models/smplx/`,
+  `SMPLX_{NEUTRAL,FEMALE,MALE}.npz`). Gotcha worth flagging: the SMPL-X download site also
+  hosts the plain (older) **SMPL** model under a similarly-named download, and a first
+  attempt grabbed that by mistake — files were named `SMPLX_NEUTRAL.npz` etc. but only had
+  11 npz keys (`J`, `posedirs`, `shapedirs`, `v_template`, `weights`, ...), missing hand PCA
+  (`hands_componentsl/r`) entirely, so `smplx.create(..., model_type='smplx')` failed with
+  `AttributeError: 'Struct' object has no attribute 'hands_componentsl'`. The correct
+  package is `models_smplx_v1_1.zip` (~870MB) from the SMPL-X-specific section of the
+  downloads page; genuine SMPL-X npz files have 22 keys and load into a model that produces
+  10475 vertices / 127 joints on a forward pass — verified that actually works here.
 - **Not yet installed**: `GVHMR`. Installing it doesn't strictly require the SMPL-X models,
   but running stage 1 does, and those need the user's own registration
   (smpl-x.is.tue.mpg.de) — no point installing further until that's in hand. Its dependency
