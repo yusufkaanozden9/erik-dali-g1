@@ -1,0 +1,23 @@
+# Cloned upstream projects — pulled by setup_envs.sh, pinned to a commit in that script
+third_party/
+
+# Downloaded/trimmed source video
+reference_motion/raw/
+
+# Pipeline intermediates (motion data, checkpoints)
+*.npz
+*.pkl
+*.onnx
+*.onnx.data
+logs/
+outputs/
+*.mp4
+!reference_motion/raw/.gitkeep
+
+# SMPL-X body models (license-gated, never commit)
+**/body_models/
+
+# Python / conda
+__pycache__/
+*.pyc
+.venv/
