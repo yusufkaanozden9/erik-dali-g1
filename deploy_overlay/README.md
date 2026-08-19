@@ -191,6 +191,38 @@ in ~1.5s in sim even at 20x its configured gains. The harness's `--support` mode
 gantry/operator holding the robot until the policy takes over. Worth knowing before planning
 a feet-on-the-ground test around FixStand holding the robot up between runs.
 
+## What happens when the dance ends (2026-08-19)
+
+Run the whole sequence and watch past `time_end`, which nothing had done before:
+
+```bash
+conda run -n unitree_rl_mjlab python scripts/08_sim2sim_fsm.py \
+  --start supine --support --passive-secs 2 --stand-secs 4 --time-end 23.6 --once --duration 45
+```
+
+The robot is lifted off the floor, dances all 23.6s upright at **13.7 deg** peak torso tilt --
+and then falls over the moment `State_Mimic` hands back to `end_state`. Peak tilt after the
+handover **90 deg**, pelvis down to **0.16 m**.
+
+This is not a policy failure, it is the handover. `FixStand` is a fixed-pose PD with no
+balance authority (it topples a free-standing G1 in ~1.5s on its own, even at 20x its
+configured gains), so at the instant the policy stops there is nothing holding the robot up.
+`Passive` is worse -- it is zero stiffness by definition. `Velocity`, the one state that
+could catch it, is disabled because upstream ships its config but no trained weights.
+**There is currently no end state that leaves this robot standing.**
+
+And nothing catches it either: `bad_orientation` is registered by `State_Mimic` and
+`State_RLBase`, not by `State_FixStand`, so once the FSM has handed back there is no
+orientation check in the loop at all. The restored guard above does not cover this window.
+
+Consequences for the feet-on-the-ground test, which is configured with `time_end: 5.0`:
+the robot is expected to finish five seconds of dancing **and then go down**, by design, on
+every single run. Support it at the handover, or do not let the dance end while it is
+free-standing. Decide which before the test, not during it.
+
+Recorded: `reference_motion/retargeted/sim2sim_full_sequence.mp4` -- lying on the floor,
+lifted, the full dance, and the fall afterwards, 38s at 50fps.
+
 ## Next hardware step
 
 Feet on the ground, 5s, per `docs/PIPELINE.md` §5. Not yet done. The deploy binary

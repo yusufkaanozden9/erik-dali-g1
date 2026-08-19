@@ -221,6 +221,8 @@ class DeployFSM:
     self.track_err = np.zeros(self.n_policy)   # sum |q_measured - q_commanded|
     self.track_n = 0
     self.max_tilt = 0.0
+    self.danced = False        # has a Mimic run completed at least once
+    self.after = None          # (max tilt, min pelvis z) once the dance hands back
     self.mimic_kp = np.zeros(N_MOTORS)   # snapshot: the report runs after Mimic exits
     self.mimic_kd = np.zeros(N_MOTORS)
 
@@ -274,6 +276,7 @@ class DeployFSM:
     if self.state != self.MIMIC:
       return None
     if self.episode_length * self.step_dt > self.time_end:
+      self.danced = True
       return self.end_state, "motion finished (reached time_end)"
 
     # bad_orientation, computed for real. Upstream's isaaclab::mdp::bad_orientation is
@@ -418,11 +421,16 @@ def main() -> int:
   p.add_argument("--time-end", type=float, default=None,
                  help="override config.yaml's Mimic time_end (which is capped at 5s for the "
                       "next hardware test); pass 23.6 to watch the whole dance")
+  p.add_argument("--once", action="store_true",
+                 help="run the dance once and then stop re-entering Mimic, so what the robot\n                      does *after* time_end -- when State_Mimic hands back to end_state -- is\n                      observable instead of being cut short by the next scheduled run.")
+  p.add_argument("--record", type=Path, default=None,
+                 help="render offscreen to this .mp4 (implies --headless)")
   p.add_argument("--replay", action="store_true",
                  help="kinematic playback of the reference motion itself -- no policy, no\n                      physics, joints and root driven straight from the npz. This is what the\n                      retargeting produced, i.e. the target the policy is chasing.")
   p.add_argument("--policy", type=Path, default=None, help="override policy.onnx path")
   p.add_argument("--motion", type=Path, default=None, help="override motion npz path")
   args = p.parse_args()
+  args.headless = args.headless or args.record is not None
   if args.passive_secs is None:
     args.passive_secs = 0.0 if args.start == 'stand' else 2.0
 
@@ -497,12 +505,17 @@ def main() -> int:
       if target:
         fsm.enter(target, low, t, "operator (keyboard)")
 
+    if fsm.danced and fsm.state != fsm.MIMIC:
+      tilt = abs(np.arccos(np.clip(-low.projected_gravity()[2], -1.0, 1.0)))
+      fsm.after = ((max(fsm.after[0], tilt), min(fsm.after[1], data.qpos[2]))
+                   if fsm.after else (tilt, data.qpos[2]))
     nxt = fsm.check_transitions(low, t)
     if nxt is not None:
       fsm.enter(nxt[0], low, t, nxt[1])
     elif fsm.state == fsm.PASSIVE and t - fsm.t_enter >= args.passive_secs and not forced:
       fsm.enter(fsm.FIXSTAND, low, t, f"scheduled (passive dwell {args.passive_secs}s)")
-    elif fsm.state == fsm.FIXSTAND and t - fsm.t_enter >= args.stand_secs:
+    elif (fsm.state == fsm.FIXSTAND and t - fsm.t_enter >= args.stand_secs
+          and not (args.once and fsm.danced)):
       fsm.enter(fsm.MIMIC, low, t, f"scheduled (stand dwell {args.stand_secs}s)")
 
     fsm.control_step(low, t)
@@ -532,7 +545,25 @@ def main() -> int:
         data.qvel[:6] = 0.0
     return not (args.duration and data.time >= args.duration)
 
-  if args.headless:
+  if args.record is not None:
+    import imageio.v2 as imageio
+    cam = mujoco.MjvCamera()
+    cam.distance, cam.azimuth, cam.elevation = 3.2, 135.0, -12.0
+    cam.lookat[:] = [0.0, 0.0, 0.8]
+    fps = int(round(1.0 / fsm.step_dt))
+    # The offscreen framebuffer defaults to 640x480 and the scene XML does not raise it,
+    # so anything wider has to be asked for here before the renderer is built.
+    height, width = 540, 960
+    model.vis.global_.offwidth = max(model.vis.global_.offwidth, width)
+    model.vis.global_.offheight = max(model.vis.global_.offheight, height)
+    with mujoco.Renderer(model, height, width) as renderer, \
+         imageio.get_writer(str(args.record), fps=fps, macro_block_size=1) as writer:
+      while tick():
+        cam.lookat[:] = [data.qpos[0], data.qpos[1], 0.8]
+        renderer.update_scene(data, camera=cam)
+        writer.append_data(renderer.render())
+    print(f"wrote {args.record}")
+  elif args.headless:
     import time as _time
     while tick():
       if args.realtime:
@@ -551,6 +582,11 @@ def main() -> int:
           _time.sleep(lag)
 
   print(f"\nended in {fsm.state} at t={data.time:.2f}s")
+  if fsm.after:
+    tilt, z = fsm.after
+    verdict = "STAYED UP" if np.degrees(tilt) < 30 else "WENT DOWN"
+    print(f"after the dance handed back to {fsm.end_state}: {verdict} "
+          f"(peak tilt {np.degrees(tilt):.1f} deg, lowest pelvis {z:.3f} m)")
   if fsm.track_n:
     err = np.degrees(fsm.track_err / fsm.track_n)
     names = [mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_ACTUATOR, int(m)) for m in fsm.joint_ids_map]
