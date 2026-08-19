@@ -28,7 +28,7 @@ if git -C "$VENDORED" apply --reverse --check "$OVERLAY/unitree_rl_mjlab.patch" 
   echo "[skip] C++ patch already applied"
 elif git -C "$VENDORED" apply --check "$OVERLAY/unitree_rl_mjlab.patch" 2>/dev/null; then
   git -C "$VENDORED" apply "$OVERLAY/unitree_rl_mjlab.patch"
-  echo "[ok]   C++ patch applied (5 files)"
+  echo "[ok]   C++ patch applied ($(grep -c '^diff --git' "$OVERLAY/unitree_rl_mjlab.patch") files)"
 else
   echo "ERROR: unitree_rl_mjlab.patch does not apply cleanly to this checkout." >&2
   exit 1

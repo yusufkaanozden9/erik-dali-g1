@@ -79,7 +79,8 @@ pipeline was cross-checked term-by-term against mjlab's own training env and mat
 1e-3 (the anchor term to 0.000000), so what follows is about the deploy code, not the
 harness.
 
-**1. `bad_orientation` cannot fire. At all.** `deploy/include/isaaclab/envs/mdp/terminations.h`:
+**1. `bad_orientation` could not fire at all — now fixed in this overlay.** Upstream's
+`deploy/include/isaaclab/envs/mdp/terminations.h` was:
 
 ```cpp
 inline bool bad_orientation(ManagerBasedRLEnv* env, float limit_angle = 1.0)
@@ -90,12 +91,38 @@ inline bool bad_orientation(ManagerBasedRLEnv* env, float limit_angle = 1.0)
 }
 ```
 
-The real test is commented out and the function returns `false` unconditionally. This is
-unmodified upstream, and every robot in the repo registers it as their tip-over fallback.
-So on 2026-07-31 `bad_orientation` did not "fail to fire" because the robot stayed within
-threshold — **the check does not exist at runtime**. The robot could be fully inverted and
-the FSM would stay in Mimic. Right now the only thing between a diverging policy and the
-hardware is the operator's reaction time. Fix before the feet-on-the-ground test.
+The real test commented out, `false` returned unconditionally — and every robot in the repo
+registers this as its tip-over fallback. So on 2026-07-31 `bad_orientation` did not fail to
+fire because the robot stayed within threshold: **the check did not exist at runtime**. The
+robot could have gone fully inverted and the FSM would have stayed in Mimic. Until this was
+fixed, the operator's reaction time was the only tip-over protection there was.
+
+The patch re-enables it with two guards, because a false positive here is not free — the
+transition lands in `Passive`, which is zero-stiffness, so a spurious trip drops a robot that
+was doing fine:
+
+- `projected_gravity_b` is derived from the IMU quaternion, so before the first valid
+  lowstate (or on a corrupt frame) it is not a unit vector. Anything that is not one is
+  treated as *no reading* rather than as a reading of zero tilt. The acos argument is also
+  clamped: NaN would compare false and put us straight back to the silent failure.
+- Three consecutive violations are required before acting. A genuine tip-over holds for far
+  longer; a single bad frame does not.
+
+`deploy_overlay/test_bad_orientation.cpp` exercises the logic standalone — upright, 45 deg
+(under the 57 deg limit), 70 deg, fully inverted, all-zero / NaN / un-normalised readings,
+a single bad frame between good ones, and the hold window itself. Eleven cases, all passing
+under `g++ -std=c++17 -Wall -Wextra -Werror`:
+
+```bash
+g++ -std=c++17 -Wall -Wextra -Werror -O2 -o /tmp/t deploy_overlay/test_bad_orientation.cpp && /tmp/t
+```
+
+The standalone test exists because the deploy binary needs unitree_sdk2, DDS and cnpy and
+only builds on the robot — **this change has not been compiled in situ or run on hardware.**
+Build it on the Jetson before trusting it. `scripts/08_sim2sim_fsm.py` now defaults to the
+restored guard and reproduces the behaviour end to end (start the dance with the robot on
+the floor and the FSM drops to Passive within three checks); `--no-tipover-guard` restores
+upstream's dead-code behaviour for comparison.
 
 **2. Mimic gains are applied positionally, not through `joint_ids_map`.** `State_Mimic::enter`
 (and `State_RLBase::enter`) do `for (i < joint_stiffness.size()) motor_cmd[i].kp() = ...`,

@@ -92,6 +92,72 @@ index cbbc2af..11bee9b 100644
          );
      }
  
+diff --git a/deploy/include/isaaclab/envs/mdp/terminations.h b/deploy/include/isaaclab/envs/mdp/terminations.h
+index 966cd41..8c86b2d 100644
+--- a/deploy/include/isaaclab/envs/mdp/terminations.h
++++ b/deploy/include/isaaclab/envs/mdp/terminations.h
+@@ -1,5 +1,8 @@
+ #pragma once
+ 
++#include <algorithm>
++#include <cmath>
++
+ #include "isaaclab/envs/manager_based_rl_env.h"
+ 
+ namespace isaaclab
+@@ -7,13 +10,47 @@ namespace isaaclab
+ namespace mdp
+ {
+ 
++// A genuine tip-over holds for far longer than this; a single corrupt frame does not.
++inline constexpr int kBadOrientationHoldChecks = 3;
++
+ inline bool bad_orientation(ManagerBasedRLEnv* env, float limit_angle = 1.0)
+ {
+     auto & asset = env->robot;
+     auto & data = asset->data.projected_gravity_b;
+-//    return std::fabs(std::acos(-data[2])) > limit_angle;
+-    return false;
++
++    // Upstream ships the real test commented out with `return false;` under it, so the
++    // tip-over fallback that every robot in this repo registers is dead code: the FSM
++    // cannot leave a policy state no matter how far over the robot goes. On 2026-07-31 a
++    // G1 diverged badly during a suspended Mimic run and this never fired -- which was
++    // read as "the threshold was never crossed" rather than "the check does not exist".
++    //
++    // Re-enabled, with two guards, because a false positive here is not free: this
++    // transition lands in Passive, which is zero-stiffness, so a spurious trip drops a
++    // robot that was doing fine.
++    //   1. projected_gravity_b is derived from the IMU quaternion. Before the first valid
++    //      lowstate, or on a corrupt frame, it is not a unit vector -- treat anything that
++    //      is not one as "no reading" rather than as a reading of zero tilt.
++    //   2. Require several consecutive violations before acting.
++    const float norm = std::sqrt(data[0] * data[0] + data[1] * data[1] + data[2] * data[2]);
++    if (!std::isfinite(norm) || std::fabs(norm - 1.0f) > 0.1f)
++    {
++        return false;
++    }
++
++    // -gravity_z is cos(tilt) for an upright robot; clamp so float error cannot hand
++    // acos an out-of-domain argument and return NaN, which would compare false and put
++    // us straight back to the silent failure this is fixing.
++    const float tilt = std::acos(std::clamp(-data[2] / norm, -1.0f, 1.0f));
++
++    static int consecutive = 0;
++    consecutive = (tilt > limit_angle) ? consecutive + 1 : 0;
++    if (consecutive == kBadOrientationHoldChecks)
++    {
++        spdlog::warn("bad_orientation: tilt {:.0f} deg over limit {:.0f} deg -> Passive",
++                     tilt * 180.0f / M_PI, limit_angle * 180.0f / M_PI);
++    }
++    return consecutive >= kBadOrientationHoldChecks;
+ }
+ 
+-} 
+-} 
+\ No newline at end of file
++}
++}
 diff --git a/deploy/robots/g1_23dof/main.cpp b/deploy/robots/g1_23dof/main.cpp
 index 286bb3f..74e5583 100644
 --- a/deploy/robots/g1_23dof/main.cpp

@@ -62,6 +62,7 @@ SCENE_XML = MJLAB_DIR / "src/assets/robots/unitree_g1/xmls/scene_g1_23dof.xml"
 N_MOTORS = 29  # the G1's lowcmd motor array, which the MJCF actuator order matches
 MOTION_FPS = 50.0  # State_Mimic::MotionLoader_ hardcodes dt = 1/50
 WAIST_YAW_MOTOR = 12  # State_Mimic composes torso yaw from this motor
+BAD_ORIENTATION_HOLD_CHECKS = 3  # matches kBadOrientationHoldChecks in the overlay
 
 
 # ----------------------------------------------------------------------------------
@@ -216,6 +217,7 @@ class DeployFSM:
     self.t_enter = 0.0
     self.init_quat = np.array([1.0, 0.0, 0.0, 0.0])
     self._tipover_warned = False
+    self._over_count = 0
     self.track_err = np.zeros(self.n_policy)   # sum |q_measured - q_commanded|
     self.track_n = 0
     self.max_tilt = 0.0
@@ -231,6 +233,7 @@ class DeployFSM:
     self.state = state
     self.t_enter = t
     self._tipover_warned = False
+    self._over_count = 0
 
     if state == self.PASSIVE:
       self.kp[:] = 0.0
@@ -279,14 +282,17 @@ class DeployFSM:
     # tips. Reported here either way; --tipover-guard makes it act.
     tilt = abs(np.arccos(np.clip(-low.projected_gravity()[2], -1.0, 1.0)))
     self.max_tilt = max(self.max_tilt, tilt)
-    if tilt > self.args.tipover_limit:
+    # Same hold window as the overlay's terminations.h, so the sim trips when the robot
+    # would rather than one check earlier.
+    self._over_count = self._over_count + 1 if tilt > self.args.tipover_limit else 0
+    if self._over_count >= BAD_ORIENTATION_HOLD_CHECKS:
       if self.args.tipover_guard:
         return self.PASSIVE, f"bad_orientation (tilt {np.degrees(tilt):.0f} deg)"
       if not self._tipover_warned:
         self._tipover_warned = True
         print(f"  [!] tilt {np.degrees(tilt):.0f} deg exceeds the {np.degrees(self.args.tipover_limit):.0f} deg "
-              f"limit at t={t - self.t_enter:.2f}s into the dance -- upstream's "
-              f"bad_orientation returns false, so the deployed binary does NOT react.")
+              f"limit at t={t - self.t_enter:.2f}s into the dance -- with --no-tipover-guard "
+              f"(upstream's dead bad_orientation) nothing reacts to it.")
     return None
 
   # -- per-control-step ------------------------------------------------------------
@@ -406,9 +412,8 @@ def main() -> int:
                  help="build init_quat from the reference TORSO yaw instead of the reference\n                      PELVIS yaw. State_Mimic::enter uses motion->root_quaternion() (pelvis)\n                      while the observation it feeds uses motion_anchor_quat_w (torso =\n                      pelvis o waist_yaw), so the anchor observation carries a constant yaw\n                      bias equal to the reference waist yaw at time_start -- -14.8 deg for\n                      erik_dali. With this flag the anchor reads exactly identity when the\n                      robot is on the reference, as training defines it.")
   p.add_argument("--match-training-model", action="store_true",
                  help="override the sim2sim scene's joint armature/damping/frictionloss and\n                      timestep with the values the policy was TRAINED against. Unitree's\n                      scene_g1_23dof.xml and mjlab's own g1_23dof asset disagree on all four\n                      (armature 0.01 vs 0.0036, damping 0.05 vs 0, frictionloss 0.2 vs 0,\n                      dt 0.002 vs 0.005). Use this to separate a sim2sim model gap from a\n                      genuine policy failure.")
-  p.add_argument("--tipover-guard", action="store_true",
-                 help="actually fall back to Passive on bad_orientation (upstream cannot: "
-                      "its bad_orientation is hardcoded to false)")
+  p.add_argument("--no-tipover-guard", dest="tipover_guard", action="store_false",
+                 help="report tilt violations without acting on them, i.e. UPSTREAM's\n                      behaviour, where bad_orientation is hardcoded to false. The default\n                      is the guard the overlay restores.")
   p.add_argument("--tipover-limit", type=float, default=1.0, help="bad_orientation limit, radians")
   p.add_argument("--time-end", type=float, default=None,
                  help="override config.yaml's Mimic time_end (which is capped at 5s for the "
