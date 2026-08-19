@@ -205,8 +205,14 @@ tilt. What happened next depended entirely on whether the FSM handed back:
 
 | when the motion ends | peak torso tilt after | lowest pelvis | |
 |---|---|---|---|
-| hand back to `end_state` | 96 deg | 0.09 m | goes down |
-| `hold_after_end: true` | **6 deg** | **0.78 m** | **stays up, indefinitely** |
+| hand back to `end_state`, nobody catches | 96 deg | 0.10 m | goes down |
+| hand back, operator catches it | 6 deg | 0.78 m | stays up — but a person is holding it |
+| `hold_after_end: true` | **6 deg** | **0.78 m** | **stays up, hands off, indefinitely** |
+
+Catching it works and is worth knowing as the manual fallback (`--catch` in the harness),
+but it needs someone standing there for every run. Holding the final frame reaches the same
+place with nobody touching the robot, which is what "still standing when the dance ends"
+has to mean if it is going to be useful.
 
 Handing back drops the robot whatever it hands back to, and that is a property of the FSM,
 not of the policy. `FixStand` is a fixed-pose PD with no balance authority — on its own it

@@ -437,6 +437,8 @@ def main() -> int:
                  help="run the dance once and then stop re-entering Mimic, so what the robot\n                      does *after* time_end -- when State_Mimic hands back to end_state -- is\n                      observable instead of being cut short by the next scheduled run.")
   p.add_argument("--record", type=Path, default=None,
                  help="render offscreen to this .mp4 (implies --headless)")
+  p.add_argument("--cam-distance", type=float, default=2.3,
+                 help="recording camera distance in metres (default 2.3)")
   p.add_argument("--replay", action="store_true",
                  help="kinematic playback of the reference motion itself -- no policy, no\n                      physics, joints and root driven straight from the npz. This is what the\n                      retargeting produced, i.e. the target the policy is chasing.")
   p.add_argument("--policy", type=Path, default=None, help="override policy.onnx path")
@@ -562,7 +564,12 @@ def main() -> int:
           if fsm.state == fsm.FIXSTAND and args.stand_secs > 0:
             a = float(np.clip((t - fsm.t_enter) / args.stand_secs, 0.0, 1.0))
             data.qpos[:3] = (1 - a) * origin[:3] + a * stand_root[:3]
-            q = (1 - a) * origin[3:7] + a * stand_root[3:7]
+            # q and -q are the same rotation, so a naive lerp between two quaternions that
+            # happen to be on opposite sheets takes the long way round and passes through
+            # near-zero norm -- which shows up as the robot briefly thrashing mid-ramp.
+            # Put them on the same sheet first.
+            q0 = origin[3:7] if np.dot(origin[3:7], stand_root[3:7]) >= 0 else -origin[3:7]
+            q = (1 - a) * q0 + a * stand_root[3:7]
             data.qpos[3:7] = q / np.linalg.norm(q)
           else:
             data.qpos[:7] = origin
@@ -572,8 +579,8 @@ def main() -> int:
   if args.record is not None:
     import imageio.v2 as imageio
     cam = mujoco.MjvCamera()
-    cam.distance, cam.azimuth, cam.elevation = 3.2, 135.0, -12.0
-    cam.lookat[:] = [0.0, 0.0, 0.8]
+    cam.distance, cam.azimuth, cam.elevation = args.cam_distance, 130.0, -8.0
+    cam.lookat[:] = [0.0, 0.0, 0.85]
     fps = int(round(1.0 / fsm.step_dt))
     # The offscreen framebuffer defaults to 640x480 and the scene XML does not raise it,
     # so anything wider has to be asked for here before the renderer is built.
@@ -583,7 +590,9 @@ def main() -> int:
     with mujoco.Renderer(model, height, width) as renderer, \
          imageio.get_writer(str(args.record), fps=fps, macro_block_size=1) as writer:
       while tick():
-        cam.lookat[:] = [data.qpos[0], data.qpos[1], 0.8]
+        # Track the robot laterally but keep the height fixed, so the camera does not
+        # bob with the dance or dive at the floor while it is still lying there.
+        cam.lookat[:] = [data.qpos[0], data.qpos[1], 0.85]
         renderer.update_scene(data, camera=cam)
         writer.append_data(renderer.render())
     print(f"wrote {args.record}")
