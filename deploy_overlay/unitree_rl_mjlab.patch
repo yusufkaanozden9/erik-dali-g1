@@ -1,0 +1,146 @@
+diff --git a/deploy/include/FSM/BaseState.h b/deploy/include/FSM/BaseState.h
+index 8d621fe..8d2b9f1 100644
+--- a/deploy/include/FSM/BaseState.h
++++ b/deploy/include/FSM/BaseState.h
+@@ -30,6 +30,27 @@ public:
+     int getState() {return state_; }
+     bool isState(int state) { return state_ == state; }
+     std::vector<std::pair<std::function<bool()>, int>> registered_checks;
++
++    // Parallel to registered_checks: why each check exists. Upstream logs only
++    // "changed from X to Y", which is ambiguous exactly when it matters — an
++    // operator hitting the e-stop, a comms dropout, the motion running out, and
++    // the policy tripping bad_orientation all land in Passive and print the same
++    // line. Kept as a separate vector rather than widening registered_checks,
++    // whose type every robot's deploy code touches; sites that register without
++    // a label still work and simply report "unlabelled".
++    std::vector<std::string> check_labels;
++
++    void register_check(std::function<bool()> pred, int target_id, std::string label)
++    {
++        check_labels.resize(registered_checks.size());  // pad over unlabelled entries
++        registered_checks.emplace_back(std::move(pred), target_id);
++        check_labels.emplace_back(std::move(label));
++    }
++
++    std::string check_label(size_t i) const
++    {
++        return (i < check_labels.size() && !check_labels[i].empty()) ? check_labels[i] : "unlabelled";
++    }
+ private:
+     int state_;
+ };
+diff --git a/deploy/include/FSM/CtrlFSM.h b/deploy/include/FSM/CtrlFSM.h
+index 62aacf2..65d4f60 100644
+--- a/deploy/include/FSM/CtrlFSM.h
++++ b/deploy/include/FSM/CtrlFSM.h
+@@ -87,11 +87,13 @@ private:
+         
+         // Check if need to change state
+         int nextStateMode = 0;
++        std::string reason;
+         for(int i(0); i<currentState->registered_checks.size(); i++)
+         {
+             if(currentState->registered_checks[i].first())
+             {
+                 nextStateMode = currentState->registered_checks[i].second;
++                reason = currentState->check_label(i);
+                 break;
+             }
+         }
+@@ -102,7 +104,8 @@ private:
+             {
+                 if(state->isState(nextStateMode))
+                 {
+-                    spdlog::info("FSM: Change state from {} to {}", currentState->getStateString(), state->getStateString());
++                    spdlog::info("FSM: Change state from {} to {} [reason: {}]",
++                                 currentState->getStateString(), state->getStateString(), reason);
+                     currentState->exit();
+                     currentState = state;
+                     currentState->enter();
+diff --git a/deploy/include/FSM/FSMState.h b/deploy/include/FSM/FSMState.h
+index cbbc2af..11bee9b 100644
+--- a/deploy/include/FSM/FSMState.h
++++ b/deploy/include/FSM/FSMState.h
+@@ -35,21 +35,19 @@ public:
+                 unitree::common::dsl::Parser p(condition);
+                 auto ast = p.Parse();
+                 auto func = unitree::common::dsl::Compile(*ast);
+-                registered_checks.emplace_back(
+-                    std::make_pair(
+-                        [func]()->bool{ return func(FSMState::lowstate->joystick); },
+-                        fsm_id
+-                    )
++                register_check(
++                    [func]()->bool{ return func(FSMState::lowstate->joystick); },
++                    fsm_id,
++                    "joystick '" + condition + "'"
+                 );
+             }
+         }
+ 
+         // register for all states
+-        registered_checks.emplace_back(
+-            std::make_pair(
+-                []()->bool{ return lowstate->isTimeout(); },
+-                FSMStringMap.right.at("Passive")
+-            )
++        register_check(
++            []()->bool{ return lowstate->isTimeout(); },
++            FSMStringMap.right.at("Passive"),
++            "lowstate timeout (robot comms lost)"
+         );
+     }
+ 
+diff --git a/deploy/robots/g1_23dof/main.cpp b/deploy/robots/g1_23dof/main.cpp
+index 286bb3f..74e5583 100644
+--- a/deploy/robots/g1_23dof/main.cpp
++++ b/deploy/robots/g1_23dof/main.cpp
+@@ -16,7 +16,16 @@ void init_fsm_state()
+     {
+         spdlog::critical("The other process is using the lowcmd channel, please close it first.");
+         unitree::robot::go2::shutdown();
+-        // exit(0);
++        // Upstream ships this exit commented out, so the guard logs and then runs
++        // anyway — two controllers end up publishing lowcmd at once, which is the
++        // exact failure unitree_rl_mjlab's own deployment README warns produces
++        // shaking. Seen live on 2026-07-31: the warning fired, the program carried
++        // on regardless, and the operator had no way to tell whether the built-in
++        // controller had actually released the channel. Re-enabled, and with a
++        // non-zero status so a wrapper/service can tell this apart from a clean
++        // shutdown. If this trips: the robot is not in debug mode — press L2+R2
++        // while it is in zero-torque, then start again.
++        exit(1);
+     }
+     FSMState::lowcmd = std::make_unique<LowCmd_t>();
+     FSMState::lowstate = std::make_shared<LowState_t>();
+diff --git a/deploy/robots/g1_23dof/src/State_Mimic.cpp b/deploy/robots/g1_23dof/src/State_Mimic.cpp
+index 83df530..a5f981e 100644
+--- a/deploy/robots/g1_23dof/src/State_Mimic.cpp
++++ b/deploy/robots/g1_23dof/src/State_Mimic.cpp
+@@ -119,17 +119,15 @@ State_Mimic::State_Mimic(int state_mode, std::string state_string)
+     env->alg = std::make_unique<isaaclab::OrtRunner>(policy_dir / "exported" / "policy.onnx");
+ 
+     const auto & joy = FSMState::lowstate->joystick;
+-    this->registered_checks.emplace_back(
+-        std::make_pair(
+-            [&]()->bool{ return (env->episode_length * env->step_dt) > time_range_[1]; }, // time out
+-            FSMStringMap.right.at(end_state)
+-        )
++    this->register_check(
++        [&]()->bool{ return (env->episode_length * env->step_dt) > time_range_[1]; },
++        FSMStringMap.right.at(end_state),
++        "motion finished (reached time_end)"
+     );
+-    this->registered_checks.emplace_back(
+-        std::make_pair(
+-            [&]()->bool{ return isaaclab::mdp::bad_orientation(env.get(), 1.0); }, // bad orientation
+-            FSMStringMap.right.at("Passive")
+-        )
++    this->register_check(
++        [&]()->bool{ return isaaclab::mdp::bad_orientation(env.get(), 1.0); },
++        FSMStringMap.right.at("Passive"),
++        "bad_orientation (policy lost the torso upright, threshold 1.0)"
+     );
+ }
+ 

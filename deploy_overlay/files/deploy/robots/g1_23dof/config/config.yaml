@@ -1,0 +1,106 @@
+FSM:
+  # NOTE: Velocity (id 3) and Mimic_Dance1_subject2 (id 5) are deliberately NOT
+  # enabled. Upstream ships their config/params but no trained weights — there is
+  # no config/policy/velocity/**/exported/policy.onnx and no
+  # config/policy/mimic/dance1_subject2/{exported/policy.onnx,params/*.npz}.
+  # CtrlFSM's constructor instantiates every enabled FSM up front, and both
+  # State_RLBase and State_Mimic load their ONNX (and, for Mimic, the motion npz)
+  # in their constructors — so enabling either one crashes g1_ctrl at startup,
+  # *after* it has already taken the lowcmd channel. Their config blocks are kept
+  # below (unused, harmless) so they can be re-enabled once weights exist.
+  _: # enabled fsms
+    Passive:
+      id: 1
+    FixStand:
+      id: 2
+
+    Mimic_ErikDali:
+      id: 6
+      type: Mimic
+
+  Passive:
+    transitions: 
+      FixStand: LT + up.on_pressed
+    mode: [
+      1,1,1,1,1,1,
+      1,1,1,1,1,1,
+      1,1,1,
+      1,1,1,1,1,1,1,
+      1,1,1,1,1,1,1,
+    ]
+    kd: [
+      3,3,3,3,3,3,
+      3,3,3,3,3,3,
+      3,3,3,
+      3,3,3,3,3,3,3,  
+      3,3,3,3,3,3,3,  
+    ]
+  FixStand:
+    transitions:
+      Passive: LT + B.on_pressed
+      Mimic_ErikDali: RB + X.on_pressed
+    kp: [
+      100., 100., 100., 150., 40., 40.,
+      100., 100., 100., 150., 40., 40.,
+      200,200,200,
+      40,40,40,40,40,40,40,
+      40,40,40,40,40,40,40,
+    ]
+    kd: [
+      2,2,2,4,2,2,
+      2,2,2,4,2,2,
+      5,5,5,
+      10,10,10,10,10,10,10,
+      10,10,10,10,10,10,10,
+    ]
+    ts: [0, 3]
+    qs: [
+      [],
+      [ -0.1, 0,0,0.3,-0.2,0,
+        -0.1, 0,0,0.3,-0.2,0,
+        0,0,0,
+        0.35, 0.18,0,0.87,0,0,0,
+        0.35,-0.18,0,0.87,0,0,0
+      ]
+    ]
+  Velocity:
+    transitions:
+      Passive: LT + B.on_pressed
+      Mimic_Dance1_subject2: RB + A.on_pressed
+      Mimic_ErikDali: RB + X.on_pressed
+    policy_dir: config/policy/velocity
+
+  Mimic_Dance1_subject2:
+    transitions:
+      Passive: LT + B.on_pressed
+      Velocity: RT + A.on_pressed
+
+    motion_file: config/policy/mimic/dance1_subject2/params/dance1_subject2.npz
+    policy_dir: config/policy/mimic/dance1_subject2/
+    time_start: 0.0
+    time_end: 500.0
+
+  Mimic_ErikDali:
+    transitions:
+      Passive: LT + B.on_pressed
+
+    motion_file: config/policy/mimic/erik_dali/params/erik_dali.npz
+    policy_dir: config/policy/mimic/erik_dali/
+    time_start: 0.0
+    # Deliberately short for the first feet-on-the-ground test: the dance stops
+    # itself after 5s and returns to FixStand, so a bad run is bounded instead of
+    # relying on the operator's reaction. Raise in steps (5 -> 10 -> 23.6) as each
+    # length is seen to behave. 500.0 would have been clamped to the motion's own
+    # 23.6s duration by State_Mimic; the full-length value to restore is 23.6.
+    #
+    # Context for why this exists: on 2026-07-31, suspended with the feet dangling,
+    # the robot ran 8s cleanly and then diverged badly by 11s. bad_orientation never
+    # fired — the operator stopped it. A position-controlled policy with no ground
+    # reaction has nothing to push against, so its corrections build up instead of
+    # settling. The sim evaluation that scored 100% was entirely ground-contact and
+    # never covered that regime.
+    time_end: 5.0
+    # State_Mimic defaults end_state to "Velocity" and resolves it with an
+    # unguarded FSMStringMap.right.at() — that throws when Velocity is disabled,
+    # so this must name an enabled state.
+    end_state: FixStand

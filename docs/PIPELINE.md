@@ -199,3 +199,54 @@ rollout.
 
 None of this is runnable without physical G1 hardware; documented here so the eventual
 hardware step follows the same staged-rollout discipline the original plan called for.
+
+### Deploy-side wiring — done, and partially run on hardware (2026-07-31)
+
+The trained checkpoint (`trained_model/{policy.onnx,erik_dali.npz}`) is wired into
+`unitree_rl_mjlab`'s existing FSM/Mimic deploy mechanism, following the same layout as the
+vendored `dance1_subject2` example (there is no separate/official Unitree "dance mode" API —
+both entries run through the same generic `State_Mimic` C++ class, config-driven, no rebuild
+needed):
+
+- `deploy/robots/g1_23dof/config/policy/mimic/erik_dali/exported/policy.onnx`
+- `deploy/robots/g1_23dof/config/policy/mimic/erik_dali/params/erik_dali.npz`
+- `deploy/robots/g1_23dof/config/policy/mimic/erik_dali/params/deploy.yaml` — copied verbatim
+  from `dance1_subject2`'s; safe to reuse because `stiffness`/`damping`/
+  `G1_23DOF_ACTION_SCALE`/`default_joint_pos` all come from the robot's own actuator/asset
+  config (`src/assets/robots/unitree_g1/g1_23dof_constants.py`, `HOME_KEYFRAME`), not from the
+  motion file — every `g1_23dof` tracking policy exports the same values regardless of which
+  dance it was trained on.
+- `deploy/robots/g1_23dof/config/config.yaml`: `Mimic_ErikDali` FSM state (id 6), entered with
+  `RB + X`, `LT + B` back to `Passive` (emergency zero-torque).
+
+**All of this lives in `deploy_overlay/`, which is tracked.** `third_party/unitree_rl_mjlab`
+is gitignored and detached-HEAD, so changes made inside it do not survive a `setup_envs.sh`
+re-run. Restore them with `./deploy_overlay/apply.sh`; `deploy_overlay/README.md` explains each
+change and why it exists. Do not edit the vendored clone directly without folding the change
+back into the overlay.
+
+#### First hardware run — suspended, feet dangling (2026-07-31)
+
+Stage 2 of the staged rollout above was actually run. The robot performed ~8s of the dance
+cleanly, then diverged badly by ~11s. `bad_orientation` never fired; the operator stopped it.
+
+A position-controlled tracking policy suspended in the air has no ground reaction to push
+against, so its corrections accumulate instead of settling. **The 100% pass rate from
+`scripts/07_evaluate_policy.py` (§4 below) does not cover this regime** — every episode there
+was ground-contact. Suspended is outside the training distribution, not a milder version of it,
+so a clean suspended run was never the right gate for this policy in the first place.
+
+Two consequences, both now in the overlay:
+
+- `time_end: 5.0` — the dance stops itself and returns to `FixStand`, so the next test is
+  bounded by config rather than operator reaction time. Raise 5 → 10 → 23.6 as each length
+  behaves. (`end_state: FixStand` is mandatory, not cosmetic: `State_Mimic` defaults it to
+  `Velocity` and resolves it via an unguarded `FSMStringMap.right.at()`, which throws when
+  `Velocity` is disabled — and it is, since upstream ships its config but no weights.)
+- FSM transitions now log *why* they fired, and the lowcmd-channel guard in `main.cpp` exits
+  instead of warning-and-continuing. Both were things the run itself made painfully missing.
+
+#### Not yet done
+
+Building the `g1_23dof` deploy binary, and the feet-on-the-ground 5s test — the actual next
+hardware step.

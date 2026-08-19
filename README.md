@@ -66,10 +66,22 @@ planned.
 - [x] **Stage 6** — real PPO training launched on the actual Erik Dalı data,
       `--env.scene.num-envs=4096`. Measured throughput: 0.96s/iteration, ~102k
       env-steps/sec on a single RTX 4090. 5000-iteration run ≈ 1h20m, ≈ $0.45 in GPU time.
+- [x] **Stage 7** — headless multi-seed robustness evaluation (`scripts/07_evaluate_policy.py`):
+      100% of episodes completed the full motion in the nominal scenario. Note the regime this
+      does *not* cover — see the hardware run below.
+- [x] **Deploy wiring** — `Mimic_ErikDali` FSM state + policy/motion files, kept in the tracked
+      `deploy_overlay/` because the vendored `third_party/unitree_rl_mjlab` clone is gitignored
+      and does not survive a `setup_envs.sh` re-run. Restore with `./deploy_overlay/apply.sh`.
+- [~] **First hardware run (2026-07-31)** — suspended, feet dangling: ~8s clean, then diverged
+      badly by ~11s, `bad_orientation` never fired, operator stopped it. A position-controlled
+      policy with no ground reaction has nothing to push against, so its corrections build up
+      instead of settling — and the 100% sim evaluation was entirely ground-contact, so it never
+      covered that regime. `time_end` is now capped at 5s and FSM transitions log their reason.
+- [ ] **Next** — build the `g1_23dof` deploy binary; feet-on-the-ground 5s test.
 
 See `docs/PIPELINE.md` for the full list of install gotchas found along the way (each one
 real, verified, not assumed from the upstream docs) and what's still open (curriculum /
-domain randomization tuning, sim2sim cross-check, staged real-hardware rollout).
+domain randomization tuning, sim2sim cross-check, the rest of the staged hardware rollout).
 
 ## Quickstart (on a Linux box with an NVIDIA GPU)
 
