@@ -219,6 +219,8 @@ class DeployFSM:
     self.track_err = np.zeros(self.n_policy)   # sum |q_measured - q_commanded|
     self.track_n = 0
     self.max_tilt = 0.0
+    self.mimic_kp = np.zeros(N_MOTORS)   # snapshot: the report runs after Mimic exits
+    self.mimic_kd = np.zeros(N_MOTORS)
 
   # -- transitions -----------------------------------------------------------------
   def enter(self, state: str, low: LowState, t: float, reason: str) -> None:
@@ -252,6 +254,8 @@ class DeployFSM:
         n = len(self.stiffness)
         self.kp[:n] = self.stiffness
         self.kd[:n] = self.damping
+      self.mimic_kp[:] = self.kp
+      self.mimic_kd[:] = self.kd
       self.raw_action[:] = 0.0
       self.episode_length = 0
       self.motion.update(self.time_start)
@@ -409,6 +413,8 @@ def main() -> int:
   p.add_argument("--time-end", type=float, default=None,
                  help="override config.yaml's Mimic time_end (which is capped at 5s for the "
                       "next hardware test); pass 23.6 to watch the whole dance")
+  p.add_argument("--replay", action="store_true",
+                 help="kinematic playback of the reference motion itself -- no policy, no\n                      physics, joints and root driven straight from the npz. This is what the\n                      retargeting produced, i.e. the target the policy is chasing.")
   p.add_argument("--policy", type=Path, default=None, help="override policy.onnx path")
   p.add_argument("--motion", type=Path, default=None, help="override motion npz path")
   args = p.parse_args()
@@ -448,8 +454,13 @@ def main() -> int:
   print(f"schedule : Passive {args.passive_secs}s -> FixStand {args.stand_secs}s -> {fsm.MIMIC} "
         f"(time_end {fsm.time_end:.1f}s -> {fsm.end_state})\n")
 
-  place_robot(model, data, args.start, np.asarray(cfg['FSM']['FixStand']['qs'][1], dtype=np.float64))
-  pinned = data.qpos[:7].copy() if (args.start == "hold" or args.support) else None
+  stand_pose = np.asarray(cfg['FSM']['FixStand']['qs'][1], dtype=np.float64)
+  # Where 'standing' actually is for this model, measured rather than assumed.
+  place_robot(model, data, 'stand', stand_pose)
+  stand_root = data.qpos[:7].copy()
+  place_robot(model, data, args.start, stand_pose)
+  start_root = data.qpos[:7].copy()
+  supported = args.start == "hold" or args.support
   low.read(data)
   fsm.enter(fsm.PASSIVE, low, 0.0, "startup")
 
@@ -462,6 +473,18 @@ def main() -> int:
   def tick() -> bool:
     """One 50Hz control period. Returns False when the run should stop."""
     t = data.time
+    if args.replay:
+      motion.update(t)
+      f = motion.frame
+      for i, motor in enumerate(fsm.joint_ids_map):
+        jid = int(model.actuator_trnid[int(motor), 0])
+        data.qpos[model.jnt_qposadr[jid]] = motion.joint_pos[f][i]
+      data.qpos[:3] = motion.root_pos[f]
+      data.qpos[3:7] = motion.root_quat[f]
+      data.qvel[:] = 0.0
+      mujoco.mj_forward(model, data)
+      data.time += fsm.step_dt
+      return not (args.duration and data.time >= args.duration) and t < motion.duration
     low.read(data)
 
     while forced:
@@ -478,13 +501,29 @@ def main() -> int:
       fsm.enter(fsm.MIMIC, low, t, f"scheduled (stand dwell {args.stand_secs}s)")
 
     fsm.control_step(low, t)
-    tau = fsm.torque(low)
     for _ in range(substeps):
-      data.ctrl[:] = tau
+      # The motor-level PD is a *continuous* loop on the real robot: lowcmd carries the
+      # target q, and each motor closes the loop on it at ~500Hz-2kHz on its own. Holding
+      # one torque across the whole 20ms control period instead is a zero-order hold on
+      # torque rather than on position, which removes most of the damping term's authority
+      # exactly when the joint is moving fastest. Recompute per physics step, target held.
+      data.ctrl[:] = fsm.torque(low.read(data))
       mujoco.mj_step(model, data)
-      # 'hold' pins throughout (suspended test); --support pins only until Mimic takes over.
-      if pinned is not None and (args.start == 'hold' or fsm.state != fsm.MIMIC):
-        data.qpos[:7] = pinned
+      # 'hold' pins throughout (the suspended test). --support instead *raises* the robot
+      # from wherever it started to standing across the FixStand phase and lets go the
+      # moment Mimic begins -- the gantry/operator, not a get-up policy. Without it a
+      # robot that starts on the floor stays on the floor: FixStand only drives joints to
+      # a pose, it has no notion of standing up.
+      if supported and (args.start == 'hold' or fsm.state != fsm.MIMIC):
+        if args.start == 'hold':
+          data.qpos[:7] = start_root
+        elif fsm.state == fsm.FIXSTAND and args.stand_secs > 0:
+          a = float(np.clip((t - fsm.t_enter) / args.stand_secs, 0.0, 1.0))
+          data.qpos[:3] = (1 - a) * start_root[:3] + a * stand_root[:3]
+          q = (1 - a) * start_root[3:7] + a * stand_root[3:7]
+          data.qpos[3:7] = q / np.linalg.norm(q)
+        else:
+          data.qpos[:7] = start_root
         data.qvel[:6] = 0.0
     return not (args.duration and data.time >= args.duration)
 
@@ -514,8 +553,9 @@ def main() -> int:
     print(f"mean |measured - commanded| over {fsm.track_n} policy ticks, worst 6 joints:")
     for i in np.argsort(err)[::-1][:6]:
       motor = int(fsm.joint_ids_map[i])
-      flag = "  <-- gains not reassigned by State_Mimic::enter" if motor >= len(fsm.stiffness) else ""
-      print(f"    motor {motor:2d} {names[i]:<22} {err[i]:6.2f} deg  (kp {fsm.kp[motor]:5.1f} kd {fsm.kd[motor]:4.1f}){flag}")
+      flag = ("  <-- gains not reassigned by State_Mimic::enter"
+              if motor >= len(fsm.stiffness) and not args.fix_gain_map else "")
+      print(f"    motor {motor:2d} {names[i]:<22} {err[i]:6.2f} deg  (kp {fsm.mimic_kp[motor]:5.1f} kd {fsm.mimic_kd[motor]:4.1f}){flag}")
   return 0
 
 

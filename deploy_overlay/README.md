@@ -127,13 +127,37 @@ spends control authority correcting an error that is not there. `--fix-anchor-ya
 Whether `dance1_subject2` hides this depends on its own frame-0 waist yaw, which is a
 plausible reason it survived upstream.
 
-**Still open:** even with 2 and 3 corrected the policy does not survive the dance in the
-sim2sim scene -- it tips within ~1s of the support being released. Unattributed so far.
-`scene_g1_23dof.xml` and mjlab's own `g1_23dof.xml` disagree on joint armature (0.01 vs
-0.0036), damping (0.05 vs 0), frictionloss (0.2 vs 0) and timestep (0.002 vs 0.005), so a
-sim2sim model gap is the leading candidate, but `--match-training-model` makes MuJoCo's
-solver too slow to A/B in reasonable time and the question is unresolved. Do not read the
-current sim behaviour as a prediction of hardware behaviour in either direction.
+**Resolved (was open): the harness, not the policy.** The tipping reported here earlier was
+a fidelity bug in `08_sim2sim_fsm.py`, since fixed: it computed the motor torque once per
+50Hz control period and held it across all ten physics steps. On the robot the target `q`
+goes out at 50Hz but each motor closes its own PD loop continuously at 500Hz-2kHz, so
+holding torque constant is a zero-order hold on *torque* instead of on *position* --
+it strips the damping term of its authority exactly when a joint is moving fastest.
+Recomputing the PD every physics step, target held, changed the outcome completely:
+
+| | before | after |
+|---|---|---|
+| max torso tilt over the dance | 118 deg | **13.9 deg** |
+| worst joint tracking error | 40-57 deg | **7-16 deg** |
+| outcome | tipped ~1s after release | **completes all 23.6s upright** |
+
+Worth internalising rather than filing away: most of this policy's apparent stability is
+supplied by the motor loop running far faster than the policy. Anything that degrades that
+loop on hardware -- a slow control thread, a dropped lowcmd cycle, motors in a mode where
+they hold torque rather than track position -- takes away the same margin this bug did.
+
+**That also resizes defects 2 and 3.** With the harness fixed, toggling either changes max
+tilt by a few tenths of a degree (13.9 baseline, 13.4 anchor-fixed, 13.3 gain-map-fixed,
+13.2 both). They are real defects in the deployed code and worth fixing, but they are not
+what makes or breaks the run, and the earlier framing here overstated them. Defect 1 is the
+one that matters, and it is a safety hole rather than a performance one.
+
+**Suspended vs on the ground.** `--start hold` reproduces the 2026-07-31 setup. Suspended,
+joint tracking error runs 23-35 deg on the hips and ankles against 12-16 deg with the feet
+loaded -- the legs have nothing to push against, so the same policy tracks two to three
+times worse. That is the mechanism the hardware run showed, reproduced in sim, and it stands
+independently of how far the torso tips (the pelvis is pinned, so tilt reads zero by
+construction).
 
 Related: **FixStand does not balance.** It is a fixed-pose PD, so a free-standing G1 topples
 in ~1.5s in sim even at 20x its configured gains. The harness's `--support` models the
