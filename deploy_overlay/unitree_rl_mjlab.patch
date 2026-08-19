@@ -181,10 +181,38 @@ index 286bb3f..74e5583 100644
      FSMState::lowcmd = std::make_unique<LowCmd_t>();
      FSMState::lowstate = std::make_shared<LowState_t>();
 diff --git a/deploy/robots/g1_23dof/src/State_Mimic.cpp b/deploy/robots/g1_23dof/src/State_Mimic.cpp
-index 83df530..a5f981e 100644
+index 83df530..25b3ad2 100644
 --- a/deploy/robots/g1_23dof/src/State_Mimic.cpp
 +++ b/deploy/robots/g1_23dof/src/State_Mimic.cpp
-@@ -119,17 +119,15 @@ State_Mimic::State_Mimic(int state_mode, std::string state_string)
+@@ -112,6 +112,27 @@ State_Mimic::State_Mimic(int state_mode, std::string state_string)
+         end_state = cfg["end_state"].as<std::string>();
+     }
+ 
++    // When the motion runs out, handing back drops the robot. Verified in sim: the G1
++    // completes the dance at ~14 deg peak torso tilt and then goes over the moment this
++    // state exits -- 96 deg tilt, pelvis to 0.10m. It is the handover, not the policy.
++    // FixStand is a fixed-pose PD with no balance authority, Passive is zero stiffness by
++    // definition, and Velocity -- the one state that could hold the robot -- ships without
++    // weights and is disabled. There is no end state that leaves this robot standing.
++    //
++    // With hold_after_end, this state simply does not register the timeout transition.
++    // MotionLoader_::update clamps the phase to [0, duration], so the policy keeps tracking
++    // the final frame and goes on balancing around it, which is the only thing in this FSM
++    // that can. Sim: still up, 6 deg peak tilt, indefinitely. Also checked at time_end 5,
++    // 10 and 15, i.e. mid-dance freezes rather than the motion's own end -- all stayed up.
++    //
++    // The exit is then deliberate: bad_orientation still fires if the robot goes over, and
++    // the operator still has LT+B. Both land in Passive, which is zero-torque, so support
++    // the robot before ending the run.
++    bool hold_after_end = false;
++    if (cfg["hold_after_end"]) {
++        hold_after_end = cfg["hold_after_end"].as<bool>();
++    }
++
+     env = std::make_unique<isaaclab::ManagerBasedRLEnv>(
+         YAML::LoadFile(policy_dir / "params" / "deploy.yaml"),
+         articulation
+@@ -119,17 +140,20 @@ State_Mimic::State_Mimic(int state_mode, std::string state_string)
      env->alg = std::make_unique<isaaclab::OrtRunner>(policy_dir / "exported" / "policy.onnx");
  
      const auto & joy = FSMState::lowstate->joystick;
@@ -193,16 +221,22 @@ index 83df530..a5f981e 100644
 -            [&]()->bool{ return (env->episode_length * env->step_dt) > time_range_[1]; }, // time out
 -            FSMStringMap.right.at(end_state)
 -        )
-+    this->register_check(
-+        [&]()->bool{ return (env->episode_length * env->step_dt) > time_range_[1]; },
-+        FSMStringMap.right.at(end_state),
-+        "motion finished (reached time_end)"
-     );
+-    );
 -    this->registered_checks.emplace_back(
 -        std::make_pair(
 -            [&]()->bool{ return isaaclab::mdp::bad_orientation(env.get(), 1.0); }, // bad orientation
 -            FSMStringMap.right.at("Passive")
 -        )
++    if (hold_after_end) {
++        spdlog::info("'{}' holds the final frame after {:.1f}s instead of handing back to '{}'",
++                     state_string, time_range_[1], end_state);
++    } else {
++        this->register_check(
++            [&]()->bool{ return (env->episode_length * env->step_dt) > time_range_[1]; },
++            FSMStringMap.right.at(end_state),
++            "motion finished (reached time_end)"
++        );
++    }
 +    this->register_check(
 +        [&]()->bool{ return isaaclab::mdp::bad_orientation(env.get(), 1.0); },
 +        FSMStringMap.right.at("Passive"),

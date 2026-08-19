@@ -87,20 +87,36 @@ FSM:
     motion_file: config/policy/mimic/erik_dali/params/erik_dali.npz
     policy_dir: config/policy/mimic/erik_dali/
     time_start: 0.0
-    # Deliberately short for the first feet-on-the-ground test: the dance stops
-    # itself after 5s and returns to FixStand, so a bad run is bounded instead of
-    # relying on the operator's reaction. Raise in steps (5 -> 10 -> 23.6) as each
-    # length is seen to behave. 500.0 would have been clamped to the motion's own
-    # 23.6s duration by State_Mimic; the full-length value to restore is 23.6.
+
+    # How much of the dance to run. Raise in steps (5 -> 10 -> 23.6) as each length
+    # is seen to behave; 23.6s is the motion's own full duration, and State_Mimic
+    # clamps anything longer to it.
     #
-    # Context for why this exists: on 2026-07-31, suspended with the feet dangling,
-    # the robot ran 8s cleanly and then diverged badly by 11s. bad_orientation never
-    # fired — the operator stopped it. A position-controlled policy with no ground
-    # reaction has nothing to push against, so its corrections build up instead of
-    # settling. The sim evaluation that scored 100% was entirely ground-contact and
-    # never covered that regime.
+    # Context: on 2026-07-31, suspended with the feet dangling, the robot ran 8s
+    # cleanly and then diverged badly by 11s, and the operator stopped it. Two
+    # things are now known about that run. Suspended is outside the training
+    # distribution -- there is no ground reaction to push against, so corrections
+    # accumulate instead of settling, and in sim the same policy tracks 2-3x worse
+    # suspended than with the feet loaded. And bad_orientation did not "fail to
+    # fire": upstream's was `return false;`, dead code, which the overlay fixes.
     time_end: 5.0
-    # State_Mimic defaults end_state to "Velocity" and resolves it with an
-    # unguarded FSMStringMap.right.at() — that throws when Velocity is disabled,
-    # so this must name an enabled state.
+
+    # Do not hand back when the motion ends -- keep tracking the final frame.
+    # Handing back drops the robot, whatever it hands back to: FixStand is a
+    # fixed-pose PD with no balance authority, Passive is zero stiffness by
+    # definition, and Velocity -- the only state that could catch it -- ships
+    # without weights and is disabled. Without this the run ends in a fall every
+    # time, by design. Sim, feet on the ground: hand back and the robot goes from
+    # 14 deg peak tilt during the dance to 96 deg and a pelvis at 0.10m; hold and
+    # it stays up at 6 deg indefinitely. Checked at time_end 5, 10, 15 and 23.6 --
+    # mid-dance freezes as well as the motion's own end -- all stayed up.
+    #
+    # The exit is deliberate now: bad_orientation still fires if the robot goes
+    # over, and the operator still has LT+B. Both land in Passive, which is
+    # zero-torque, so support the robot before ending the run.
+    hold_after_end: true
+
+    # Still required even when holding: State_Mimic reads end_state before it knows
+    # whether it will be used, through an unguarded FSMStringMap.right.at() that
+    # throws when the named state is disabled.
     end_state: FixStand

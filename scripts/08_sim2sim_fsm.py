@@ -223,6 +223,7 @@ class DeployFSM:
     self.max_tilt = 0.0
     self.danced = False        # has a Mimic run completed at least once
     self.after = None          # (max tilt, min pelvis z) once the dance hands back
+    self.root_at_exit = None   # pose the dance left the robot in, for --catch
     self.mimic_kp = np.zeros(N_MOTORS)   # snapshot: the report runs after Mimic exits
     self.mimic_kd = np.zeros(N_MOTORS)
 
@@ -276,8 +277,13 @@ class DeployFSM:
     if self.state != self.MIMIC:
       return None
     if self.episode_length * self.step_dt > self.time_end:
-      self.danced = True
-      return self.end_state, "motion finished (reached time_end)"
+      if not self.danced:
+        self.danced = True
+        if self.args.hold_last_frame:
+          print(f"motion finished at t={t - self.t_enter:.2f}s into Mimic -- holding the final "
+                f"frame, staying in {self.MIMIC} (no handover)")
+      if not self.args.hold_last_frame:
+        return self.end_state, "motion finished (reached time_end)"
 
     # bad_orientation, computed for real. Upstream's isaaclab::mdp::bad_orientation is
     # `return false;` with the real test commented out (deploy/include/isaaclab/envs/mdp/
@@ -421,6 +427,12 @@ def main() -> int:
   p.add_argument("--time-end", type=float, default=None,
                  help="override config.yaml's Mimic time_end (which is capped at 5s for the "
                       "next hardware test); pass 23.6 to watch the whole dance")
+  p.add_argument("--hold-last-frame", dest="hold_last_frame", action="store_true", default=None,
+                 help="do not hand back at time_end -- stay in Mimic. MotionLoader clamps the\n                      phase to [0, duration], so the policy goes on tracking the final frame,\n                      and it is the only balance-capable controller in the FSM. This is the\n                      way to still be standing when the dance is over. Defaults to the\n                      config's own hold_after_end, so sim and robot cannot drift apart.")
+  p.add_argument("--no-hold-last-frame", dest="hold_last_frame", action="store_false",
+                 help="hand back at time_end regardless of what the config says")
+  p.add_argument("--catch", action="store_true",
+                 help="re-engage the support when the dance hands back to end_state -- the\n                      operator catching the robot -- and ramp it back to standing. Separate\n                      from --support, which is bring-up only.")
   p.add_argument("--once", action="store_true",
                  help="run the dance once and then stop re-entering Mimic, so what the robot\n                      does *after* time_end -- when State_Mimic hands back to end_state -- is\n                      observable instead of being cut short by the next scheduled run.")
   p.add_argument("--record", type=Path, default=None,
@@ -444,6 +456,8 @@ def main() -> int:
       return 1
 
   cfg = yaml.safe_load((DEPLOY_DIR / "config/config.yaml").read_text())
+  if args.hold_last_frame is None:
+    args.hold_last_frame = bool(cfg['FSM']['Mimic_ErikDali'].get('hold_after_end', False))
   deploy_cfg = yaml.safe_load((mimic_dir / "params/deploy.yaml").read_text())
   motion = MotionLoader(motion_path)
   session = ort.InferenceSession(str(policy_path))
@@ -464,8 +478,9 @@ def main() -> int:
   print(f"gains    : Mimic gains applied {'through joint_ids_map (corrected)' if args.fix_gain_map else 'positionally (as deployed)'}")
   print(f"anchor   : init_quat from reference {'torso (corrected)' if args.fix_anchor_yaw else 'pelvis (as deployed)'}")
   print(f"start    : {args.start}   physics {1 / model.opt.timestep:.0f}Hz, policy {1 / fsm.step_dt:.0f}Hz")
+  ending = "hold the final frame" if args.hold_last_frame else f"hand back to {fsm.end_state}"
   print(f"schedule : Passive {args.passive_secs}s -> FixStand {args.stand_secs}s -> {fsm.MIMIC} "
-        f"(time_end {fsm.time_end:.1f}s -> {fsm.end_state})\n")
+        f"(time_end {fsm.time_end:.1f}s, then {ending})\n")
 
   stand_pose = np.asarray(cfg['FSM']['FixStand']['qs'][1], dtype=np.float64)
   # Where 'standing' actually is for this model, measured rather than assumed.
@@ -473,7 +488,6 @@ def main() -> int:
   stand_root = data.qpos[:7].copy()
   place_robot(model, data, args.start, stand_pose)
   start_root = data.qpos[:7].copy()
-  supported = args.start == "hold" or args.support
   low.read(data)
   fsm.enter(fsm.PASSIVE, low, 0.0, "startup")
 
@@ -505,12 +519,14 @@ def main() -> int:
       if target:
         fsm.enter(target, low, t, "operator (keyboard)")
 
-    if fsm.danced and fsm.state != fsm.MIMIC:
+    if fsm.danced and (fsm.state != fsm.MIMIC or args.hold_last_frame):
       tilt = abs(np.arccos(np.clip(-low.projected_gravity()[2], -1.0, 1.0)))
       fsm.after = ((max(fsm.after[0], tilt), min(fsm.after[1], data.qpos[2]))
                    if fsm.after else (tilt, data.qpos[2]))
     nxt = fsm.check_transitions(low, t)
     if nxt is not None:
+      if fsm.state == fsm.MIMIC:
+        fsm.root_at_exit = data.qpos[:7].copy()
       fsm.enter(nxt[0], low, t, nxt[1])
     elif fsm.state == fsm.PASSIVE and t - fsm.t_enter >= args.passive_secs and not forced:
       fsm.enter(fsm.FIXSTAND, low, t, f"scheduled (passive dwell {args.passive_secs}s)")
@@ -527,22 +543,30 @@ def main() -> int:
       # exactly when the joint is moving fastest. Recompute per physics step, target held.
       data.ctrl[:] = fsm.torque(low.read(data))
       mujoco.mj_step(model, data)
-      # 'hold' pins throughout (the suspended test). --support instead *raises* the robot
-      # from wherever it started to standing across the FixStand phase and lets go the
-      # moment Mimic begins -- the gantry/operator, not a get-up policy. Without it a
-      # robot that starts on the floor stays on the floor: FixStand only drives joints to
-      # a pose, it has no notion of standing up.
-      if supported and (args.start == 'hold' or fsm.state != fsm.MIMIC):
-        if args.start == 'hold':
-          data.qpos[:7] = start_root
-        elif fsm.state == fsm.FIXSTAND and args.stand_secs > 0:
-          a = float(np.clip((t - fsm.t_enter) / args.stand_secs, 0.0, 1.0))
-          data.qpos[:3] = (1 - a) * start_root[:3] + a * stand_root[:3]
-          q = (1 - a) * start_root[3:7] + a * stand_root[3:7]
-          data.qpos[3:7] = q / np.linalg.norm(q)
-        else:
-          data.qpos[:7] = start_root
+      # 'hold' pins throughout (the suspended test).
+      #
+      # --support is BRING-UP ONLY: it raises the robot from wherever it started to
+      # standing across the first FixStand and lets go the moment Mimic begins. It must
+      # not re-engage once the dance has run, or the harness teleports the robot back to
+      # its start pose at the handover and that artefact gets mistaken for a fall.
+      #
+      # --catch is the separate question: the operator taking hold of the robot again at
+      # the handover, ramping it from wherever the dance left it back to standing.
+      if args.start == 'hold':
+        data.qpos[:7] = start_root
         data.qvel[:6] = 0.0
+      elif fsm.state != fsm.MIMIC:
+        active = args.catch if fsm.danced else args.support
+        origin = fsm.root_at_exit if fsm.danced else start_root
+        if active and origin is not None:
+          if fsm.state == fsm.FIXSTAND and args.stand_secs > 0:
+            a = float(np.clip((t - fsm.t_enter) / args.stand_secs, 0.0, 1.0))
+            data.qpos[:3] = (1 - a) * origin[:3] + a * stand_root[:3]
+            q = (1 - a) * origin[3:7] + a * stand_root[3:7]
+            data.qpos[3:7] = q / np.linalg.norm(q)
+          else:
+            data.qpos[:7] = origin
+          data.qvel[:6] = 0.0
     return not (args.duration and data.time >= args.duration)
 
   if args.record is not None:
@@ -584,8 +608,9 @@ def main() -> int:
   print(f"\nended in {fsm.state} at t={data.time:.2f}s")
   if fsm.after:
     tilt, z = fsm.after
-    verdict = "STAYED UP" if np.degrees(tilt) < 30 else "WENT DOWN"
-    print(f"after the dance handed back to {fsm.end_state}: {verdict} "
+    verdict = "STAYED UP" if np.degrees(tilt) < 30 and z > 0.5 else "WENT DOWN"
+    where = "held in Mimic" if args.hold_last_frame else f"handed back to {fsm.end_state}"
+    print(f"after the dance, {where}: {verdict} "
           f"(peak tilt {np.degrees(tilt):.1f} deg, lowest pelvis {z:.3f} m)")
   if fsm.track_n:
     err = np.degrees(fsm.track_err / fsm.track_n)

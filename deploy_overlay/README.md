@@ -191,37 +191,54 @@ in ~1.5s in sim even at 20x its configured gains. The harness's `--support` mode
 gantry/operator holding the robot until the policy takes over. Worth knowing before planning
 a feet-on-the-ground test around FixStand holding the robot up between runs.
 
-## What happens when the dance ends (2026-08-19)
+## Standing when the dance ends — fixed (2026-08-19)
 
 Run the whole sequence and watch past `time_end`, which nothing had done before:
 
 ```bash
 conda run -n unitree_rl_mjlab python scripts/08_sim2sim_fsm.py \
-  --start supine --support --passive-secs 2 --stand-secs 4 --time-end 23.6 --once --duration 45
+  --start supine --support --passive-secs 2 --stand-secs 4 --time-end 23.6 --duration 45
 ```
 
-The robot is lifted off the floor, dances all 23.6s upright at **13.7 deg** peak torso tilt --
-and then falls over the moment `State_Mimic` hands back to `end_state`. Peak tilt after the
-handover **90 deg**, pelvis down to **0.16 m**.
+The robot is lifted off the floor and dances all 23.6s upright at **13.7 deg** peak torso
+tilt. What happened next depended entirely on whether the FSM handed back:
 
-This is not a policy failure, it is the handover. `FixStand` is a fixed-pose PD with no
-balance authority (it topples a free-standing G1 in ~1.5s on its own, even at 20x its
-configured gains), so at the instant the policy stops there is nothing holding the robot up.
-`Passive` is worse -- it is zero stiffness by definition. `Velocity`, the one state that
-could catch it, is disabled because upstream ships its config but no trained weights.
-**There is currently no end state that leaves this robot standing.**
+| when the motion ends | peak torso tilt after | lowest pelvis | |
+|---|---|---|---|
+| hand back to `end_state` | 96 deg | 0.09 m | goes down |
+| `hold_after_end: true` | **6 deg** | **0.78 m** | **stays up, indefinitely** |
 
-And nothing catches it either: `bad_orientation` is registered by `State_Mimic` and
-`State_RLBase`, not by `State_FixStand`, so once the FSM has handed back there is no
-orientation check in the loop at all. The restored guard above does not cover this window.
+Handing back drops the robot whatever it hands back to, and that is a property of the FSM,
+not of the policy. `FixStand` is a fixed-pose PD with no balance authority — on its own it
+topples a free-standing G1 in ~1.5s even at 20x its configured gains. `Passive` is zero
+stiffness by definition. `Velocity`, the one state that could catch the robot, ships without
+weights and is disabled. **No enabled end state leaves this robot standing.**
 
-Consequences for the feet-on-the-ground test, which is configured with `time_end: 5.0`:
-the robot is expected to finish five seconds of dancing **and then go down**, by design, on
-every single run. Support it at the handover, or do not let the dance end while it is
-free-standing. Decide which before the test, not during it.
+So the overlay stops handing back. `hold_after_end` makes `State_Mimic` skip registering the
+timeout transition entirely; `MotionLoader_::update` already clamps the phase to
+`[0, duration]`, so the policy simply goes on tracking the final frame and keeps balancing
+around it — it is the only thing in this FSM that can. The final frame of erik_dali is a
+plausible stance to hold: the legs are within 20 deg of the FixStand pose, root height
+0.833m, joint velocities under 0.4 rad/s (the arms finish raised, which is the choreography).
 
-Recorded: `reference_motion/retargeted/sim2sim_full_sequence.mp4` -- lying on the floor,
-lifted, the full dance, and the fall afterwards, 38s at 50fps.
+Checked at `time_end` 5, 10, 15 and 23.6 — that is, mid-dance freezes as well as the motion's
+own end — all four stayed up, so the staged 5 -> 10 -> 23.6 ramp works with this on.
+
+The exit is deliberate now rather than automatic: `bad_orientation` still fires if the robot
+goes over, and the operator still has `LT+B`. Both land in `Passive`, which is zero-torque —
+**support the robot before ending the run.**
+
+Recorded: `reference_motion/retargeted/sim2sim_full_sequence.mp4` — floor, lift, the full
+dance, and still standing after it. 45s at 50fps. (Local only; `*.mp4` is gitignored.)
+
+### Correction to an earlier number here
+
+The first version of this section reported the handover fall as "peak tilt 90 deg, pelvis to
+0.160 m". That measurement was contaminated: `--support` was re-engaging after the dance and
+teleporting the robot back to its *start* pose, and 0.160 m is exactly the supine spawn
+height. `--support` is now bring-up only, and `--catch` is the separate switch for an
+operator taking the robot at the handover. The corrected figures are in the table above and
+the conclusion is unchanged — handing back does drop the robot — but the number was wrong.
 
 ## Next hardware step
 
