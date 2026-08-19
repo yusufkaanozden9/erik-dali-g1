@@ -474,7 +474,7 @@ def main() -> int:
     """One 50Hz control period. Returns False when the run should stop."""
     t = data.time
     if args.replay:
-      motion.update(t)
+      motion.update(t % motion.duration)  # loop, so the window stays watchable
       f = motion.frame
       for i, motor in enumerate(fsm.joint_ids_map):
         jid = int(model.actuator_trnid[int(motor), 0])
@@ -484,7 +484,7 @@ def main() -> int:
       data.qvel[:] = 0.0
       mujoco.mj_forward(model, data)
       data.time += fsm.step_dt
-      return not (args.duration and data.time >= args.duration) and t < motion.duration
+      return not (args.duration and data.time >= args.duration)
     low.read(data)
 
     while forced:
